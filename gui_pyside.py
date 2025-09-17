@@ -166,19 +166,17 @@ class MainWindow(QMainWindow):
 
     # Methods
     def openImage(self):
-        img_path = QFileDialog.getOpenFileName(
+        img_path, _ = QFileDialog.getOpenFileName(
             self, "Seleccionar Imagen", "", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
         )
         if img_path:
-            self.viewer.setImage(img_path[0])
+            self.viewer.setImage(img_path)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    print(f"Coordinates\n{window.viewer.getPointCoordinates()}")
-    print(f"Labels\n{window.viewer.getPointLabels()}")
     app.exec() #Start the event loop
 
-    print(f"Coordinates\n{window.viewer.getPointCoordinates()}")
-    print(f"Labels\n{window.viewer.getPointLabels()}")
+    #print(f"Coordinates\n{window.viewer.getPointCoordinates()}")
+    #print(f"Labels\n{window.viewer.getPointLabels()}")
