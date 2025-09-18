@@ -1,7 +1,102 @@
 import sys
 from PySide6.QtCore import Qt
-from PySide6.QtGui import (QPixmap, QPainter)
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QListWidget, QGraphicsScene, QGraphicsView, QFileDialog, QGraphicsPixmapItem, QGraphicsEllipseItem)
+from PySide6.QtGui import (QPixmap, QImage, QPainter)
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QGraphicsScene, QGraphicsView, QFileDialog, QGraphicsPixmapItem, QGraphicsEllipseItem, QPushButton, QMessageBox)
+
+import numpy as np
+import torch
+import cv2
+import matplotlib.pyplot as plt
+from sam2.build_sam import build_sam2
+from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+class ImageSegment():
+    def __init__(self, source_image_path):
+        # Attributes
+        self.masks = None
+        self.scores = None
+        self.input_point = None
+        self.input_label = None
+        self.mask_color = np.array([30, 144, 255])
+        self.masked_image = None
+
+        # Create SAM2 predictor
+        self.device = torch.device("cpu")
+        self.sam2_checkpoint = "../checkpoints/sam2.1_hiera_tiny.pt"
+        self.model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
+        self.sam2_model = build_sam2(self.model_cfg, self.sam2_checkpoint, device=self.device)
+        self.predictor = SAM2ImagePredictor(self.sam2_model)
+
+        # Load image
+        self.image = cv2.cvtColor(cv2.imread(source_image_path), cv2.COLOR_BGR2RGB)
+        self.predictor.set_image(self.image)
+
+    # Methods
+    def getMasks(self):
+        return self.masks
+    
+    def getScores(self):
+        return self.scores
+    
+    def setMaskColor(self, color_RGB):
+        self.mask_color = np.array(color_RGB)
+
+    def setInputPointArray(self, input_point_list):
+        self.input_point = np.array(input_point_list)
+    
+    def setInputLabelArray(self, input_label_list):
+        self.input_label = np.array(input_label_list)
+    
+    def setMaskedImage(self):
+        self.masks, self.scores, _ = self.predictor.predict(
+                                        point_coords=self.input_point,
+                                        point_labels=self.input_label,
+                                        multimask_output=False,
+                                        )
+        color = np.hstack((self.mask_color/255, [0.4]))
+        mask = self.masks[0]
+        h, w = mask.shape[-2:]
+        # La máscara original es booleana o de enteros, no es necesario convertirla aquí
+        # mask = mask.astype(np.uint8) # <- Esta línea no es estrictamente necesaria aquí
+        
+        # 1. Crea la imagen con canales de color en formato float
+        masked_image_float = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
+
+        # 2. Escala a 0-255 y convierte a uint8 (ESTE ES EL ARREGLO CLAVE)
+        masked_image_uint8 = (masked_image_float * 255).astype(np.uint8)
+        
+        # 3. Ahora sí, convierte el array uint8 a QPixmap
+        self.masked_image =  self.fromCV2ToQPixmap(masked_image_uint8)
+
+    def getMaskedImage(self):
+        return self.masked_image
+
+    @staticmethod
+    def fromCV2ToQPixmap(imgCV2):
+        height, width, channel = imgCV2.shape
+        bytes_per_line = channel * width
+        if channel == 3:
+            img_format = QImage.Format.Format_RGB888
+        elif channel == 4:
+            img_format = QImage.Format.Format_RGBA8888
+
+        qimage = QImage(imgCV2.data, width, height, bytes_per_line, img_format)
+        imgQPixmap = QPixmap.fromImage(qimage.copy())
+
+        return imgQPixmap
+    
+    @staticmethod
+    def fromQPixmapToCV2(imgQPixmap: QPixmap):
+        qimage = imgQPixmap.toImage()
+        if qimage.format() != QImage.Format.Format_ARGB32:
+            qimage = qimage.convertToFormat(QImage.Format.Format_ARGB32)
+        
+        ptr = qimage.bits()
+        ptr.setsize(qimage.sizeInBytes())
+        imgCV2 = np.array(ptr).reshape(qimage.height(), qimage.width(), 4)
+        imgCV2 = imgCV2[:, :, :3]
+
+        return imgCV2
 
 class Viewer(QGraphicsView):
     # Initialization
@@ -10,6 +105,7 @@ class Viewer(QGraphicsView):
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
         self.pixmap_item = None
+        self.mask_item = None
         self.click_pos = None
         self.is_panning = False
         self.scene_rect = None
@@ -26,13 +122,38 @@ class Viewer(QGraphicsView):
         self.viewport().setCursor(Qt.ArrowCursor) # Changes cursor shape
 
     # Methods
-    def setImage(self, img_path):
+    def setImageFromPath(self, source_img_path):
+        pixmap = QPixmap(source_img_path)
+        self.setImageFromPixmap(pixmap)
+
+    def setImageFromPixmap(self, pixmap):
         self.scene.clear()
-        pixmap = QPixmap(img_path)
-        self.pixmap_item = QGraphicsPixmapItem(pixmap)
+        self.mask_item = None               # <-- Olvida la referencia a la máscara anterior.
+        self.point_coordinates.clear()      # <-- Limpia la lista de coordenadas.
+        self.point_labels.clear()           # <-- Limpia la lista de etiquetas.
+        
+        self.pixmap_item = QGraphicsPixmapItem(pixmap)        
         self.scene.addItem(self.pixmap_item)
         self.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
         self.scene_rect = self.scene.itemsBoundingRect()
+    
+    def addOverlay(self, pixmap: QPixmap):
+        """
+        Añade un QPixmap como una capa superpuesta sobre la imagen principal.
+        Si ya existe una capa anterior, la elimina primero.
+        """
+        # Si ya había una máscara, la eliminamos de la escena
+        if self.mask_item is not None:
+            self.scene.removeItem(self.mask_item)
+
+        # Creamos el nuevo item para la máscara
+        self.mask_item = QGraphicsPixmapItem(pixmap)
+        
+        # Le damos un Z-value mayor que 0 para que se dibuje sobre la imagen base
+        self.mask_item.setZValue(1)
+        
+        # Lo añadimos a la escena
+        self.scene.addItem(self.mask_item)
     
     def getPointCoordinates(self):
         return self.point_coordinates
@@ -140,37 +261,57 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        # Tittle
+        # Attributes
+        self.source_img_path = None
+
+        # Window Settings
         self.setWindowTitle("GUI")
         self.resize(1200, 700)
 
         # Menu Bar
         menu_bar = self.menuBar()
-
         menu_file = menu_bar.addMenu("Archivo")
         action_open_img = menu_file.addAction("Abrir Imagen")
         action_open_img.triggered.connect(self.openImage)
+        action_run = menu_file.addAction("Run")
+        action_run.triggered.connect(self.runSegmentation)
 
         # Widgets
-        self.viewer = Viewer()
-        self.list_points = QListWidget()
-        self.viewer.setImage("/home/ddgiraldo/Thesis/Test SAM2/images/bac.jpg")
+        self.main_viewer = Viewer()
+        self.mask_viewer = Viewer()            
+        #self.main_viewer.setImageFromPath("/home/ddgiraldo/Thesis/Test SAM2/images/bac.jpg")
+        self.button = QPushButton("Button")
+
+        # Layouts
+        main_layout = QHBoxLayout()
+        main_layout.addWidget(self.main_viewer)
 
         # Containers and Layouts
         container = QWidget()
-        self.setCentralWidget(container)
-        layout = QHBoxLayout(container)
-
-        layout.addWidget(self.viewer, 3)
-        layout.addWidget(self.list_points, 1)
+        container.setLayout(main_layout)
+        self.setCentralWidget(container)        
 
     # Methods
     def openImage(self):
-        img_path, _ = QFileDialog.getOpenFileName(
+        self.source_img_path, _ = QFileDialog.getOpenFileName(
             self, "Seleccionar Imagen", "", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
         )
-        if img_path:
-            self.viewer.setImage(img_path)
+        if self.source_img_path:
+            self.main_viewer.setImageFromPath(self.source_img_path)
+            self.segment = ImageSegment(self.source_img_path)
+
+    def runSegmentation(self):
+        if self.source_img_path is None:
+            QMessageBox.warning(self, 
+                                "Imagen no encontrada", 
+                                "Por favor, carga una imagen antes de correr la segmentación.")
+            return      
+
+        self.segment.setInputPointArray(self.main_viewer.point_coordinates)
+        self.segment.setInputLabelArray(self.main_viewer.point_labels)
+        self.segment.setMaskedImage()
+        #self.mask_viewer.setImageFromPixmap(self.segment.getMaskedImage())
+        self.main_viewer.addOverlay(self.segment.getMaskedImage())
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -178,5 +319,5 @@ if __name__ == "__main__":
     window.show()
     app.exec() #Start the event loop
 
-    #print(f"Coordinates\n{window.viewer.getPointCoordinates()}")
-    #print(f"Labels\n{window.viewer.getPointLabels()}")
+    #print(f"Coordinates\n{window.main_viewer.getPointCoordinates()}")
+    #print(f"Labels\n{window.main_viewer.getPointLabels()}")
