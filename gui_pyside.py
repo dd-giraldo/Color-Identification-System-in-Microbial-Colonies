@@ -1,7 +1,7 @@
 import sys
 from PySide6.QtCore import Qt
-from PySide6.QtGui import (QPixmap, QImage, QPainter)
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QGraphicsScene, QGraphicsView, QFileDialog, QGraphicsPixmapItem, QGraphicsEllipseItem, QPushButton, QMessageBox)
+from PySide6.QtGui import (QPixmap, QImage, QPainter, QColor)
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QGraphicsScene, QGraphicsView, QFileDialog, QColorDialog, QGraphicsPixmapItem, QGraphicsEllipseItem, QPushButton, QMessageBox)
 
 import numpy as np
 import torch
@@ -17,7 +17,7 @@ class ImageSegment():
         self.scores = None
         self.input_point = None
         self.input_label = None
-        self.mask_color = np.array([30, 144, 255])
+        self.mask_color = np.array([30, 144, 255], dtype=np.uint8)
         self.masked_image = None
 
         # Create SAM2 predictor
@@ -38,6 +38,9 @@ class ImageSegment():
     def getScores(self):
         return self.scores
     
+    def getMaskColor(self):
+        return self.mask_color.tolist()
+
     def setMaskColor(self, color_RGB):
         self.mask_color = np.array(color_RGB)
 
@@ -263,6 +266,7 @@ class MainWindow(QMainWindow):
 
         # Attributes
         self.source_img_path = None
+        self.segment = None
 
         # Window Settings
         self.setWindowTitle("GUI")
@@ -270,10 +274,17 @@ class MainWindow(QMainWindow):
 
         # Menu Bar
         menu_bar = self.menuBar()
+
         menu_file = menu_bar.addMenu("Archivo")
         action_open_img = menu_file.addAction("Abrir Imagen")
         action_open_img.triggered.connect(self.openImage)
-        action_run = menu_file.addAction("Run")
+
+        menu_edit = menu_bar.addMenu("Editar")
+        action_mask_color = menu_edit.addAction("Cambiar color máscara")
+        action_mask_color.triggered.connect(self.openColorDialog)
+
+        menu_run = menu_bar.addMenu("Correr")
+        action_run = menu_run.addAction("Segmentar")
         action_run.triggered.connect(self.runSegmentation)
 
         # Widgets
@@ -301,17 +312,31 @@ class MainWindow(QMainWindow):
             self.segment = ImageSegment(self.source_img_path)
 
     def runSegmentation(self):
-        if self.source_img_path is None:
+        if self.source_img_path:
+            self.segment.setInputPointArray(self.main_viewer.point_coordinates)
+            self.segment.setInputLabelArray(self.main_viewer.point_labels)
+            self.segment.setMaskedImage()
+            self.main_viewer.addOverlay(self.segment.getMaskedImage())
+        else:
             QMessageBox.warning(self, 
                                 "Imagen no encontrada", 
                                 "Por favor, carga una imagen antes de correr la segmentación.")
-            return      
 
-        self.segment.setInputPointArray(self.main_viewer.point_coordinates)
-        self.segment.setInputLabelArray(self.main_viewer.point_labels)
-        self.segment.setMaskedImage()
-        #self.mask_viewer.setImageFromPixmap(self.segment.getMaskedImage())
-        self.main_viewer.addOverlay(self.segment.getMaskedImage())
+    def openColorDialog(self):
+        if self.segment:
+            r,g,b = self.segment.getMaskColor()
+            default_color = QColor.fromRgb(r,g,b)
+            new_color = QColorDialog.getColor(default_color, self, "Elige un color")
+            if new_color.isValid():
+                r = new_color.red()
+                g = new_color.green()
+                b = new_color.blue()
+                self.segment.setMaskColor([r,g,b])
+        else:
+            QMessageBox.warning(self, 
+                                "Imagen no encontrada", 
+                                "Por favor, carga una imagen antes de seleccionar el color.")
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
