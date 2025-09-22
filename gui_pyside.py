@@ -115,6 +115,7 @@ class Viewer(QGraphicsView):
         self.min_markpoint_radius = 1
         self.point_coordinates = []
         self.point_labels = []
+        self.marker_items = []
 
         self.setRenderHint(QPainter.Antialiasing) # Smooths the edges of drawn points
         self.setRenderHint(QPainter.SmoothPixmapTransform) # Smooths the image when scaling it
@@ -223,6 +224,7 @@ class Viewer(QGraphicsView):
                     # Aseguramos que el marcador se dibuje encima de la foto
                     marker.setZValue(1) 
                     self.scene.addItem(marker)
+                    self.marker_items.append(marker)
         # Reseteamos el estado para el próximo clic
         self.press_pos = None
         self.is_panning = False
@@ -255,9 +257,30 @@ class Viewer(QGraphicsView):
                 # Aseguramos que el marcador se dibuje encima de la foto
                 marker.setZValue(1) 
                 self.scene.addItem(marker)
+                self.marker_items.append(marker)
         
         # Pasamos el evento a la clase base para que el drag se inicie si es necesario
         super().mousePressEvent(event)
+    
+    def clearAllPoints(self):
+        if self.marker_items:
+            for marker in self.marker_items:
+                self.scene.removeItem(marker)
+
+            self.marker_items.clear()
+            self.point_coordinates.clear()
+            self.point_labels.clear()
+
+            #if self.mask_item:
+            #    self.scene.removeItem(self.mask_item)
+            #    self.mask_item = None
+    
+    def clearLastPoint(self):
+        if self.marker_items:
+            last_point = self.marker_items.pop()
+            self.scene.removeItem(last_point)
+            self.point_coordinates.pop()
+            self.point_labels.pop()
 
 class MainWindow(QMainWindow):
     # Initialization
@@ -272,8 +295,17 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("GUI")
         self.resize(1200, 700)
 
+        # Widgets
+        self.viewer = Viewer()
+        #self.viewer.setImageFromPath("/home/ddgiraldo/Thesis/Test SAM2/images/bac.jpg")
+
+
+
         # Menu Bar
         menu_bar = self.menuBar()
+        #menu_bar_font = menu_bar.font()
+        #menu_bar_font.setPointSize(14)  # Establece el nuevo tamaño de la fuente
+        #menu_bar.setFont(menu_bar_font)
 
         menu_file = menu_bar.addMenu("Archivo")
         action_open_img = menu_file.addAction("Abrir Imagen")
@@ -282,25 +314,44 @@ class MainWindow(QMainWindow):
         menu_edit = menu_bar.addMenu("Editar")
         action_mask_color = menu_edit.addAction("Cambiar color máscara")
         action_mask_color.triggered.connect(self.openColorDialog)
-
+        action_delete_last_point = menu_edit.addAction("Eliminar el último punto")
+        action_delete_last_point.triggered.connect(self.viewer.clearLastPoint)
+        action_delete_all_points = menu_edit.addAction("Eliminar todos los puntos")
+        action_delete_all_points.triggered.connect(self.viewer.clearAllPoints)
+        
         menu_run = menu_bar.addMenu("Correr")
         action_run = menu_run.addAction("Segmentar")
         action_run.triggered.connect(self.runSegmentation)
 
-        # Widgets
-        self.main_viewer = Viewer()
-        self.mask_viewer = Viewer()            
-        #self.main_viewer.setImageFromPath("/home/ddgiraldo/Thesis/Test SAM2/images/bac.jpg")
-        self.button = QPushButton("Button")
-
         # Layouts
         main_layout = QHBoxLayout()
-        main_layout.addWidget(self.main_viewer)
+        main_layout.addWidget(self.viewer)
 
         # Containers and Layouts
         container = QWidget()
+        container.setObjectName("MainContainer")
         container.setLayout(main_layout)
-        self.setCentralWidget(container)        
+        self.setCentralWidget(container)
+
+        # Styles
+        styles = """
+        QMenuBar {
+            font-size: 14px; /* Tamaño de la fuente para la barra principal (Archivo, Editar, etc.) */
+        }
+        QMenu {
+            font-size: 13px; /* Tamaño de la fuente para los menús desplegables */
+        }
+        QMenu::item {
+            padding: 5px 8px; 
+        }
+        QMenu::item:selected {
+            background-color: #308cc6; /* Un color azul para resaltar */
+            color: white;             /* Cambia el color del texto a blanco */
+            border: 1px solid #26709e;
+        }
+        """
+        # Aplica la hoja de estilos a toda la ventana
+        self.setStyleSheet(styles)
 
     # Methods
     def openImage(self):
@@ -308,15 +359,23 @@ class MainWindow(QMainWindow):
             self, "Seleccionar Imagen", "", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
         )
         if self.source_img_path:
-            self.main_viewer.setImageFromPath(self.source_img_path)
+            self.viewer.setImageFromPath(self.source_img_path)
             self.segment = ImageSegment(self.source_img_path)
 
     def runSegmentation(self):
         if self.source_img_path:
-            self.segment.setInputPointArray(self.main_viewer.point_coordinates)
-            self.segment.setInputLabelArray(self.main_viewer.point_labels)
-            self.segment.setMaskedImage()
-            self.main_viewer.addOverlay(self.segment.getMaskedImage())
+            if self.viewer.point_coordinates:
+                self.segment.setInputPointArray(self.viewer.point_coordinates)
+                self.segment.setInputLabelArray(self.viewer.point_labels)
+                self.segment.setMaskedImage()
+                self.viewer.addOverlay(self.segment.getMaskedImage())
+            else:
+                
+                QMessageBox.warning(self, 
+                                "Prompts no encontrados", 
+                                "Por favor, crea los puntos antes de correr la segmentación.")
+                self.viewer.scene.removeItem(self.viewer.mask_item)
+                self.viewer.mask_item = None
         else:
             QMessageBox.warning(self, 
                                 "Imagen no encontrada", 
@@ -344,5 +403,5 @@ if __name__ == "__main__":
     window.show()
     app.exec() #Start the event loop
 
-    #print(f"Coordinates\n{window.main_viewer.getPointCoordinates()}")
-    #print(f"Labels\n{window.main_viewer.getPointLabels()}")
+    #print(f"Coordinates\n{window.viewer.getPointCoordinates()}")
+    #print(f"Labels\n{window.viewer.getPointLabels()}")
