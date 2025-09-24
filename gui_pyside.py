@@ -6,19 +6,63 @@ from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, 
 import numpy as np
 import torch
 import cv2
-import matplotlib.pyplot as plt
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+import matplotlib.pyplot as plt
+
+class Documentation():
+    def __init__(self):
+        self.list_r = [2, 4, 8, 12]
+        self.list_eps = [0.1**2, 0.2**2, 0.3**2, 0.4**2]
+
+    def createGuidedFilterComparisonImage(self, segment):
+        rows = len(self.list_r)
+        columns = len(self.list_eps)
+        # Crea una figura y una cuadrícula de subgráficos (axes)
+        # figsize controla el tamaño final de la imagen en pulgadas
+        fig, axes = plt.subplots(rows, columns, figsize=(10, 7.5))
+
+        for i, r in enumerate(self.list_r):
+            for j, eps in enumerate(self.list_eps):
+                segment.setFeatheredMaskedImage(r, eps)
+                img = segment.getFeatheredMaskedImageCV2()
+
+                # Muestra la imagen en el subgráfico correspondiente
+                ax = axes[i, j]
+                ax.imshow(img)
+                ax.set_xticks([])
+                ax.set_yticks([])
+
+                if i == rows - 1:
+                    ax.set_xlabel(f'ε = {eps:.2f}', fontsize=12, rotation=00, labelpad=7, ha='center', va='center')
+                
+                if j == 0:
+                    ax.set_ylabel(f'r = {r}', fontsize=12, rotation=90, labelpad=7, ha='center', va='center')
+
+        plt.subplots_adjust(wspace=0.0, hspace=0.0)
+        plt.savefig("images/comparison_image.png", dpi=300, bbox_inches='tight')
+
+    def setListR(self, radius):
+        self.list_r = radius
+    def setListEPS(self, eps):
+        self.list_eps = eps
+    def getListR(self):
+        return self.list_r
+    def getListEPS(self):
+        return self.list_eps
 
 class ImageSegment():
     def __init__(self, source_image_path):
         # Attributes
-        self.masks = None
-        self.scores = None
+        self.raw_mask = None
+        self.score = None
+        self.feathered_mask = None
         self.input_point = None
         self.input_label = None
         self.mask_color = np.array([30, 144, 255], dtype=np.uint8)
-        self.masked_image = None
+        self.raw_masked_image = None
+        self.feathered_masked_image = None
 
         # Create SAM2 predictor
         self.device = torch.device("cpu")
@@ -32,11 +76,11 @@ class ImageSegment():
         self.predictor.set_image(self.image)
 
     # Methods
-    def getMasks(self):
-        return self.masks
+    def getMask(self):
+        return self.raw_mask
     
-    def getScores(self):
-        return self.scores
+    def getScore(self):
+        return self.score
     
     def getMaskColor(self):
         return self.mask_color.tolist()
@@ -50,29 +94,50 @@ class ImageSegment():
     def setInputLabelArray(self, input_label_list):
         self.input_label = np.array(input_label_list)
     
-    def setMaskedImage(self):
-        self.masks, self.scores, _ = self.predictor.predict(
+    def setRawMaskedImage(self):
+        self.raw_mask, self.score, _ = self.predictor.predict(
                                         point_coords=self.input_point,
                                         point_labels=self.input_label,
                                         multimask_output=False,
                                         )
-        color = np.hstack((self.mask_color/255, [0.4]))
-        mask = self.masks[0]
+        self.raw_mask = self.raw_mask[0]
+        self.score = self.score[0]
+        self.raw_masked_image = self.createColoredMask(self.raw_mask, self.mask_color)
+    
+    def setFeatheredMaskedImage(self, r, eps):
+        self.guidedFilter(r, eps)
+        self.feathered_masked_image = self.createColoredMask(self.feathered_mask, self.mask_color+128)
+
+    def getRawMaskedImageCV2(self):
+        return self.raw_masked_image
+
+    def getRawMaskedImagePixmap(self):
+        return self.fromCV2ToQPixmap(self.raw_masked_image)
+
+    def getFeatheredMaskedImageCV2(self):
+        return self.feathered_masked_image
+
+    def getFeatheredMaskedImagePixmap(self):
+        return self.fromCV2ToQPixmap(self.feathered_masked_image)
+
+    def guidedFilter(self, radius=15, eps=0.01):
+        guide_I = self.image.astype(np.float32)/255.0
+        mask_p = self.raw_mask.astype(np.float32)
+
+        self.feathered_mask = cv2.ximgproc.guidedFilter(
+                            guide=guide_I,
+                            src=mask_p,
+                            radius=radius,
+                            eps=eps
+                        )
+
+    @staticmethod
+    def createColoredMask(mask, mask_color):
+        color = np.hstack((mask_color/255, [0.4]))
         h, w = mask.shape[-2:]
-        # La máscara original es booleana o de enteros, no es necesario convertirla aquí
-        # mask = mask.astype(np.uint8) # <- Esta línea no es estrictamente necesaria aquí
-        
-        # 1. Crea la imagen con canales de color en formato float
         masked_image_float = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
-
-        # 2. Escala a 0-255 y convierte a uint8 (ESTE ES EL ARREGLO CLAVE)
         masked_image_uint8 = (masked_image_float * 255).astype(np.uint8)
-        
-        # 3. Ahora sí, convierte el array uint8 a QPixmap
-        self.masked_image =  self.fromCV2ToQPixmap(masked_image_uint8)
-
-    def getMaskedImage(self):
-        return self.masked_image
+        return masked_image_uint8
 
     @staticmethod
     def fromCV2ToQPixmap(imgCV2):
@@ -88,6 +153,7 @@ class ImageSegment():
 
         return imgQPixmap
     
+    """
     @staticmethod
     def fromQPixmapToCV2(imgQPixmap: QPixmap):
         qimage = imgQPixmap.toImage()
@@ -99,7 +165,7 @@ class ImageSegment():
         imgCV2 = np.array(ptr).reshape(qimage.height(), qimage.width(), 4)
         imgCV2 = imgCV2[:, :, :3]
 
-        return imgCV2
+        return imgCV2"""
 
 class Viewer(QGraphicsView):
     # Initialization
@@ -299,17 +365,16 @@ class MainWindow(QMainWindow):
         self.viewer = Viewer()
         #self.viewer.setImageFromPath("/home/ddgiraldo/Thesis/Test SAM2/images/bac.jpg")
 
-
-
         # Menu Bar
         menu_bar = self.menuBar()
-        #menu_bar_font = menu_bar.font()
-        #menu_bar_font.setPointSize(14)  # Establece el nuevo tamaño de la fuente
-        #menu_bar.setFont(menu_bar_font)
 
         menu_file = menu_bar.addMenu("Archivo")
         action_open_img = menu_file.addAction("Abrir Imagen")
         action_open_img.triggered.connect(self.openImage)
+        submenu_extract = menu_file.addMenu("Extraer")
+        action_extract_raw_mask = submenu_extract.addAction("Extraer mascara cruda")
+        action_extract_guided_filter = submenu_extract.addAction("Extraer filtro guiado")
+
 
         menu_edit = menu_bar.addMenu("Editar")
         action_mask_color = menu_edit.addAction("Cambiar color máscara")
@@ -367,15 +432,19 @@ class MainWindow(QMainWindow):
             if self.viewer.point_coordinates:
                 self.segment.setInputPointArray(self.viewer.point_coordinates)
                 self.segment.setInputLabelArray(self.viewer.point_labels)
-                self.segment.setMaskedImage()
-                self.viewer.addOverlay(self.segment.getMaskedImage())
+                self.segment.setRawMaskedImage()
+                self.viewer.addOverlay(self.segment.getRawMaskedImagePixmap())
+                #self.segment.setFeatheredMaskedImage(4, 0.01)
+                #self.viewer.addOverlay(self.segment.getFeatheredMaskedImagePixmap())
+                self.doc = Documentation()
+                self.doc.createGuidedFilterComparisonImage(self.segment)
             else:
-                
                 QMessageBox.warning(self, 
                                 "Prompts no encontrados", 
                                 "Por favor, crea los puntos antes de correr la segmentación.")
-                self.viewer.scene.removeItem(self.viewer.mask_item)
-                self.viewer.mask_item = None
+                if self.viewer.mask_item:
+                    self.viewer.scene.removeItem(self.viewer.mask_item)
+                    self.viewer.mask_item = None
         else:
             QMessageBox.warning(self, 
                                 "Imagen no encontrada", 
@@ -396,12 +465,8 @@ class MainWindow(QMainWindow):
                                 "Imagen no encontrada", 
                                 "Por favor, carga una imagen antes de seleccionar el color.")
 
-
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
     app.exec() #Start the event loop
-
-    #print(f"Coordinates\n{window.viewer.getPointCoordinates()}")
-    #print(f"Labels\n{window.viewer.getPointLabels()}")
