@@ -10,23 +10,25 @@ from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
 
 class Documentation():
-    def __init__(self):
+    def __init__(self) -> None:
         self.list_r = [2, 4, 8, 12]
         self.list_eps = [0.1**2, 0.2**2, 0.3**2, 0.4**2]
 
-    def createGuidedFilterComparisonImage(self, segment):
-        rows = len(self.list_r)
-        columns = len(self.list_eps)
+    def createGuidedFilterComparisonImage(self, processing):
+        rows: int = len(self.list_r)
+        columns: int = len(self.list_eps)
         # Crea una figura y una cuadrícula de subgráficos (axes)
         # figsize controla el tamaño final de la imagen en pulgadas
         fig, axes = plt.subplots(rows, columns, figsize=(10, 7.5))
 
         for i, r in enumerate(self.list_r):
             for j, eps in enumerate(self.list_eps):
-                segment.setFeatheredMaskedImage(r, eps)
-                img = segment.getFeatheredMaskedImageCV2()
+                processing.guidedFilter(r, eps)
+                img = processing.createColoredMask(processing.getFeatheredMask(),
+                                                            processing.getFeatheredMaskColor())
 
                 # Muestra la imagen en el subgráfico correspondiente
                 ax = axes[i, j]
@@ -39,62 +41,124 @@ class Documentation():
                 
                 if j == 0:
                     ax.set_ylabel(f'r = {r}', fontsize=12, rotation=90, labelpad=7, ha='center', va='center')
-
+        img_path = "images/filter_comparison_image.png"
         plt.subplots_adjust(wspace=0.0, hspace=0.0)
-        plt.savefig("images/comparison_image.png", dpi=300, bbox_inches='tight')
+        plt.savefig(img_path, dpi=300, bbox_inches='tight')
+        return img_path
 
-    def setListR(self, radius):
+    @staticmethod
+    def createMaskComparisionImage(img_raw_mask, raw_color, img_feathered_mask, feathered_color):
+        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
+        ax.imshow(img_raw_mask)
+        ax.imshow(img_feathered_mask)
+        ax.set_title("Máscaras Superpuestas")
+        ax.axis('off')
+        raw_color = np.hstack((raw_color/255, [0.4]))
+        feathered_color = np.hstack((feathered_color/255, [0.4]))
+        raw_patch = mpatches.Patch(color=raw_color, label='Máscara cruda')
+        feathered_patch = mpatches.Patch(color=feathered_color, label='Máscara filtrada')
+        ax.legend(handles=[raw_patch, feathered_patch], loc='upper right')
+        img_path = "images/mask_comparison_image.png"
+        plt.savefig(img_path, dpi=300, bbox_inches='tight')
+        return img_path
+    
+    @staticmethod
+    def createHistogramImage(histograms):
+        """
+        Crea y guarda una imagen del histograma de color a partir de los datos calculados.
+        """
+        if not histograms:
+            return None
+
+        fig, ax = plt.subplots(figsize=(8, 6))
+        ax.set_title('Histograma de Color del Segmento')
+        ax.set_xlabel('Intensidad del Píxel')
+        ax.set_ylabel('Cantidad de Píxeles')
+
+        # Dibuja el histograma para cada canal
+        for color, hist in histograms.items():
+            ax.plot(hist, color=color, label=f'Canal {color.upper()}')
+        
+        ax.legend()
+        ax.grid(True, linestyle='--', alpha=0.6)
+        ax.set_xlim([0, 256]) # El rango de intensidad de color es de 0 a 255
+
+        img_path = "images/histogram_image.png"
+        plt.tight_layout()
+        plt.savefig(img_path, dpi=300, bbox_inches='tight')
+        
+        return img_path
+
+    def setListR(self, radius) -> None:
         self.list_r = radius
-    def setListEPS(self, eps):
+    def setListEPS(self, eps) -> None:
         self.list_eps = eps
-    def getListR(self):
+    def getListR(self) -> list[int]:
         return self.list_r
-    def getListEPS(self):
+    def getListEPS(self) -> list[float]:
         return self.list_eps
 
-class ImageSegment():
-    def __init__(self, source_image_path):
+class ImageProcessing():
+    def __init__(self, source_image_path) -> None:
         # Attributes
         self.raw_mask = None
         self.score = None
         self.feathered_mask = None
         self.input_point = None
         self.input_label = None
-        self.mask_color = np.array([30, 144, 255], dtype=np.uint8)
-        self.raw_masked_image = None
-        self.feathered_masked_image = None
+        self.feathered_mask_color = np.array([158, 16, 127], dtype=np.uint8)
+        self.raw_mask_color = 255 - self.feathered_mask_color
+        self.r_filter = 2
+        self.eps_filter = 0.3**2
 
         # Create SAM2 predictor
-        self.device = torch.device("cpu")
-        self.sam2_checkpoint = "../checkpoints/sam2.1_hiera_tiny.pt"
-        self.model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
-        self.sam2_model = build_sam2(self.model_cfg, self.sam2_checkpoint, device=self.device)
-        self.predictor = SAM2ImagePredictor(self.sam2_model)
+        device = torch.device("cpu")
+        sam2_checkpoint = "../checkpoints/sam2.1_hiera_tiny.pt"
+        model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
+        sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
+        self.predictor = SAM2ImagePredictor(sam2_model)
 
         # Load image
         self.image = cv2.cvtColor(cv2.imread(source_image_path), cv2.COLOR_BGR2RGB)
         self.predictor.set_image(self.image)
 
     # Methods
-    def getMask(self):
+        # NO USADA
+    def getOriginalImage(self):
+        return self.image
+        
+    def getRawMask(self):
         return self.raw_mask
     
+    def getFeatheredMask(self):
+        return self.feathered_mask
+    
+        # NO USADA
     def getScore(self):
         return self.score
+
+    def getFilterR(self) -> int:
+        return self.r_filter
     
-    def getMaskColor(self):
-        return self.mask_color.tolist()
+    def getFilterEPS(self) -> float:
+        return self.eps_filter
+    
+    def getFeatheredMaskColor(self):
+        return self.feathered_mask_color
 
-    def setMaskColor(self, color_RGB):
-        self.mask_color = np.array(color_RGB)
+    def setFeatheredMaskColor(self, color_RGB) -> None:
+        self.feathered_mask_color = np.array(color_RGB)
+    
+    def getRawMaskColor(self):
+        return self.raw_mask_color
 
-    def setInputPointArray(self, input_point_list):
+    def setInputPointArray(self, input_point_list) -> None:
         self.input_point = np.array(input_point_list)
     
-    def setInputLabelArray(self, input_label_list):
+    def setInputLabelArray(self, input_label_list) -> None:
         self.input_label = np.array(input_label_list)
     
-    def setRawMaskedImage(self):
+    def setRawMask(self) -> None:
         self.raw_mask, self.score, _ = self.predictor.predict(
                                         point_coords=self.input_point,
                                         point_labels=self.input_label,
@@ -102,25 +166,8 @@ class ImageSegment():
                                         )
         self.raw_mask = self.raw_mask[0]
         self.score = self.score[0]
-        self.raw_masked_image = self.createColoredMask(self.raw_mask, self.mask_color)
-    
-    def setFeatheredMaskedImage(self, r, eps):
-        self.guidedFilter(r, eps)
-        self.feathered_masked_image = self.createColoredMask(self.feathered_mask, self.mask_color+128)
 
-    def getRawMaskedImageCV2(self):
-        return self.raw_masked_image
-
-    def getRawMaskedImagePixmap(self):
-        return self.fromCV2ToQPixmap(self.raw_masked_image)
-
-    def getFeatheredMaskedImageCV2(self):
-        return self.feathered_masked_image
-
-    def getFeatheredMaskedImagePixmap(self):
-        return self.fromCV2ToQPixmap(self.feathered_masked_image)
-
-    def guidedFilter(self, radius=15, eps=0.01):
+    def guidedFilter(self, radius=15, eps=0.01) -> None:
         guide_I = self.image.astype(np.float32)/255.0
         mask_p = self.raw_mask.astype(np.float32)
 
@@ -131,45 +178,131 @@ class ImageSegment():
                             eps=eps
                         )
 
+    def getSegmentedRegionHistogram(self):
+        if self.feathered_mask is None or self.image is None:
+            print("La máscara o la imagen no han sido generadas todavía.")
+            return None
+        
+        _, binary_mask_uint8 = cv2.threshold(self.feathered_mask, 0.5, 255, cv2.THRESH_BINARY)
+        binary_mask_uint8 = binary_mask_uint8.astype(np.uint8)
+
+        colors = ('b', 'g', 'r') # OpenCV usa el orden BGR
+        histograms = {}
+
+        for i, color in enumerate(colors):
+            # cv2.calcHist(images, channels, mask, histSize, ranges)
+            # - [self.image]: La imagen fuente.
+            # - [i]: El canal a calcular (0 para Azul, 1 para Verde, 2 para Rojo).
+            # - binary_mask_uint8: La máscara. Solo los píxeles donde la máscara es no-cero se incluyen.
+            # - [256]: El número de "bins" o niveles de intensidad (0 a 255).
+            # - [0, 256]: El rango de intensidad.
+            hist = cv2.calcHist([self.image], [i], binary_mask_uint8, [256], [0, 256])
+            histograms[color] = hist
+            
+        return histograms
+
+    def getColorByWeightedMedian(self) -> np.ndarray:
+        # Convertir a LAB en rangos estándar
+        image_lab = self.fromRGBtoLAB(self.image)
+
+        # Filtrar pixels con peso significativo (> 0 para incluir toda la gradación)
+        valid_mask: bool = self.feathered_mask > 0
+        pixels_lab = image_lab[valid_mask]
+        weights = self.feathered_mask[valid_mask]
+        
+        # Calcular mediana ponderada para cada canal (L*, a*, b*)
+        dominant_color_lab = np.empty(3, dtype=np.float32)
+        
+        for channel in range(3):
+            # Extraer valores del canal actual
+            channel_values = pixels_lab[:, channel]
+            
+            # Ordenar valores y sus pesos correspondientes
+            sort_idx = np.argsort(channel_values)
+            sorted_values = channel_values[sort_idx]
+            sorted_weights = weights[sort_idx]
+            
+            # Calcular suma acumulativa normalizada de pesos
+            cumsum = np.cumsum(sorted_weights)
+            cumsum /= cumsum[-1]  # Normalizar a [0, 1]
+            
+            # Encontrar índice donde suma acumulativa >= 0.5 (mediana ponderada)
+            median_idx = np.searchsorted(cumsum, 0.5)
+            dominant_color_lab[channel] = sorted_values[median_idx]
+        
+        return dominant_color_lab
+
+    def getColorByKMeans(n_clusters: int = 3,
+                            min_weight_threshold: float = 0.3) -> np.ndarray:
+        # Convertir a LAB en rangos estándar
+        image_lab = self.fromRGBtoLAB(self.image)
+        
+        # Filtrar pixels con peso significativo
+        valid_mask: bool = self.feathered_mask > min_weight_threshold
+        pixels_lab = image_lab[valid_mask]
+        weights = self.feathered_mask[valid_mask]
+        
+        # Verificar que hay suficientes pixels
+        if len(pixels_lab) < n_clusters * 10:
+            # Fallback a media ponderada si hay muy pocos pixels
+            weights_norm = weights / np.sum(weights)
+            return np.average(pixels_lab, axis=0, weights=weights_norm)
+
+        # Criterios de parada para K-means
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
+        
+        # Ejecutar K-means
+        _, labels, centroids = cv2.kmeans(
+            pixels_lab.astype(np.float32), 
+            n_clusters, 
+            None, 
+            criteria, 
+            10,  # intentos
+            cv2.KMEANS_PP_CENTERS
+        )
+        
+        labels = labels.flatten()
+        
+        # Calcular peso acumulado por cluster
+        cluster_weights = np.zeros(n_clusters)
+        for i in range(n_clusters):
+            cluster_mask = (labels == i)
+            cluster_weights[i] = np.sum(weights[cluster_mask])
+        
+        # Seleccionar cluster con mayor peso acumulado
+        dominant_cluster_idx = np.argmax(cluster_weights)
+        dominant_color_lab = centroids[dominant_cluster_idx]
+        
+        return dominant_color_lab
+    
+    @staticmethod
+    def fromRGBtoLAB(image_rgb: np.ndarray) -> np.ndarray:
+        # Paso 1: Convertir RGB a LAB (OpenCV devuelve uint8 en rangos comprimidos)
+        image_lab_opencv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2LAB)
+        
+        # Paso 2: Convertir a float32 para precisión en cálculos
+        image_lab = image_lab_opencv.astype(np.float32)
+        
+        # Paso 3: Ajustar a rangos estándar CIELAB
+        image_lab[:, :, 0] = image_lab[:, :, 0] * (100.0 / 255.0)  # L*: [0, 100]
+        image_lab[:, :, 1] = image_lab[:, :, 1] - 128.0  # a*: [-128, 127]
+        image_lab[:, :, 2] = image_lab[:, :, 2] - 128.0  # b*: [-128, 127]
+        
+        return image_lab
+
     @staticmethod
     def createColoredMask(mask, mask_color):
         color = np.hstack((mask_color/255, [0.4]))
         h, w = mask.shape[-2:]
         masked_image_float = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
         masked_image_uint8 = (masked_image_float * 255).astype(np.uint8)
+
         return masked_image_uint8
 
-    @staticmethod
-    def fromCV2ToQPixmap(imgCV2):
-        height, width, channel = imgCV2.shape
-        bytes_per_line = channel * width
-        if channel == 3:
-            img_format = QImage.Format.Format_RGB888
-        elif channel == 4:
-            img_format = QImage.Format.Format_RGBA8888
-
-        qimage = QImage(imgCV2.data, width, height, bytes_per_line, img_format)
-        imgQPixmap = QPixmap.fromImage(qimage.copy())
-
-        return imgQPixmap
-    
-    """
-    @staticmethod
-    def fromQPixmapToCV2(imgQPixmap: QPixmap):
-        qimage = imgQPixmap.toImage()
-        if qimage.format() != QImage.Format.Format_ARGB32:
-            qimage = qimage.convertToFormat(QImage.Format.Format_ARGB32)
-        
-        ptr = qimage.bits()
-        ptr.setsize(qimage.sizeInBytes())
-        imgCV2 = np.array(ptr).reshape(qimage.height(), qimage.width(), 4)
-        imgCV2 = imgCV2[:, :, :3]
-
-        return imgCV2"""
 
 class Viewer(QGraphicsView):
     # Initialization
-    def __init__(self, parent=None):
+    def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
@@ -196,7 +329,7 @@ class Viewer(QGraphicsView):
         pixmap = QPixmap(source_img_path)
         self.setImageFromPixmap(pixmap)
 
-    def setImageFromPixmap(self, pixmap):
+    def setImageFromPixmap(self, pixmap: QPixmap):
         self.scene.clear()
         self.mask_item = None               # <-- Olvida la referencia a la máscara anterior.
         self.point_coordinates.clear()      # <-- Limpia la lista de coordenadas.
@@ -327,8 +460,13 @@ class Viewer(QGraphicsView):
         
         # Pasamos el evento a la clase base para que el drag se inicie si es necesario
         super().mousePressEvent(event)
+
+    def clearMask(self) -> None:
+        if self.mask_item:
+            self.scene.removeItem(self.mask_item)
+            self.mask_item = None
     
-    def clearAllPoints(self):
+    def clearAllPoints(self) -> None:
         if self.marker_items:
             for marker in self.marker_items:
                 self.scene.removeItem(marker)
@@ -336,26 +474,37 @@ class Viewer(QGraphicsView):
             self.marker_items.clear()
             self.point_coordinates.clear()
             self.point_labels.clear()
-
-            #if self.mask_item:
-            #    self.scene.removeItem(self.mask_item)
-            #    self.mask_item = None
     
-    def clearLastPoint(self):
+    def clearLastPoint(self) -> None:
         if self.marker_items:
             last_point = self.marker_items.pop()
             self.scene.removeItem(last_point)
             self.point_coordinates.pop()
             self.point_labels.pop()
+    
+    @staticmethod
+    def fromCV2ToQPixmap(imgCV2):
+        height, width, channel = imgCV2.shape
+        bytes_per_line = channel * width
+        if channel == 3:
+            img_format = QImage.Format.Format_RGB888
+        elif channel == 4:
+            img_format = QImage.Format.Format_RGBA8888
+
+        qimage = QImage(imgCV2.data, width, height, bytes_per_line, img_format)
+        imgQPixmap = QPixmap.fromImage(qimage.copy())
+
+        return imgQPixmap
 
 class MainWindow(QMainWindow):
     # Initialization
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
 
         # Attributes
         self.source_img_path = None
-        self.segment = None
+        self.processing = None
+        self.doc = None
 
         # Window Settings
         self.setWindowTitle("GUI")
@@ -372,8 +521,12 @@ class MainWindow(QMainWindow):
         action_open_img = menu_file.addAction("Abrir Imagen")
         action_open_img.triggered.connect(self.openImage)
         submenu_extract = menu_file.addMenu("Extraer")
-        action_extract_raw_mask = submenu_extract.addAction("Extraer mascara cruda")
-        action_extract_guided_filter = submenu_extract.addAction("Extraer filtro guiado")
+        action_extract_mask_comparison = submenu_extract.addAction("Comparación máscaras")
+        action_extract_mask_comparison.triggered.connect(self.exportMaskComparisonImage)
+        action_extract_filter_comparison = submenu_extract.addAction("Comparación filtro guiado")
+        action_extract_filter_comparison.triggered.connect(self.exportFeatheredComparisonImage)
+        action_extract_histogram = submenu_extract.addAction("Histograma de color")
+        action_extract_histogram.triggered.connect(self.exportHistogram)
 
 
         menu_edit = menu_bar.addMenu("Editar")
@@ -383,6 +536,8 @@ class MainWindow(QMainWindow):
         action_delete_last_point.triggered.connect(self.viewer.clearLastPoint)
         action_delete_all_points = menu_edit.addAction("Eliminar todos los puntos")
         action_delete_all_points.triggered.connect(self.viewer.clearAllPoints)
+        action_delete_mask = menu_edit.addAction("Eliminar máscara")
+        action_delete_mask.triggered.connect(self.viewer.clearMask)
         
         menu_run = menu_bar.addMenu("Correr")
         action_run = menu_run.addAction("Segmentar")
@@ -419,25 +574,28 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(styles)
 
     # Methods
-    def openImage(self):
+    def openImage(self) -> None:
         self.source_img_path, _ = QFileDialog.getOpenFileName(
             self, "Seleccionar Imagen", "", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
         )
         if self.source_img_path:
             self.viewer.setImageFromPath(self.source_img_path)
-            self.segment = ImageSegment(self.source_img_path)
+            self.processing = ImageProcessing(self.source_img_path)
+            self.doc = None
 
-    def runSegmentation(self):
+    def runSegmentation(self) -> None:
         if self.source_img_path:
             if self.viewer.point_coordinates:
-                self.segment.setInputPointArray(self.viewer.point_coordinates)
-                self.segment.setInputLabelArray(self.viewer.point_labels)
-                self.segment.setRawMaskedImage()
-                self.viewer.addOverlay(self.segment.getRawMaskedImagePixmap())
-                #self.segment.setFeatheredMaskedImage(4, 0.01)
-                #self.viewer.addOverlay(self.segment.getFeatheredMaskedImagePixmap())
+                self.processing.setInputPointArray(self.viewer.point_coordinates)
+                self.processing.setInputLabelArray(self.viewer.point_labels)
+                self.processing.setRawMask()
+                self.processing.guidedFilter(self.processing.getFilterR(),
+                                                self.processing.getFilterEPS())
+                f_color = self.processing.getFeatheredMaskColor()
+                feathered_mask_colored = self.processing.createColoredMask(self.processing.getFeatheredMask(), f_color)
+                self.viewer.addOverlay(self.viewer.fromCV2ToQPixmap(feathered_mask_colored))
+                print(self.processing.getColorByWeightedMedian())
                 self.doc = Documentation()
-                self.doc.createGuidedFilterComparisonImage(self.segment)
             else:
                 QMessageBox.warning(self, 
                                 "Prompts no encontrados", 
@@ -450,16 +608,63 @@ class MainWindow(QMainWindow):
                                 "Imagen no encontrada", 
                                 "Por favor, carga una imagen antes de correr la segmentación.")
 
-    def openColorDialog(self):
-        if self.segment:
-            r,g,b = self.segment.getMaskColor()
+    def exportFeatheredComparisonImage(self) -> None:
+        if self.doc:
+            img_path = self.doc.createGuidedFilterComparisonImage(self.processing)
+            QMessageBox.information(self, 
+                                "Imagen exportada exitosamente", 
+                                f"Guardada como {img_path}")
+        else:
+            QMessageBox.warning(self, 
+                                "Mascara no encontrada", 
+                                "Por favor, correr la segmentación antes de exportar la imagen.")
+    
+    def exportMaskComparisonImage(self) -> None:
+        if self.doc:
+            r_color = self.processing.getRawMaskColor()
+            raw_mask_colored = self.processing.createColoredMask(self.processing.getRawMask(), r_color)
+            f_color = self.processing.getFeatheredMaskColor()
+            feathered_mask_colored = self.processing.createColoredMask(self.processing.getFeatheredMask(), f_color)
+            img_path = self.doc.createMaskComparisionImage(raw_mask_colored, r_color,
+                                                            feathered_mask_colored, f_color)
+            QMessageBox.information(self, 
+                                "Imagen exportada exitosamente", 
+                                f"Guardada como {img_path}")
+        else:
+            QMessageBox.warning(self, 
+                                "Mascara no encontrada", 
+                                "Por favor, correr la segmentación antes de exportar la imagen.")
+
+    def exportHistogram(self) -> None:
+        if self.doc and self.processing:
+            # 1. Obtener los datos del histograma desde ImageProcessing
+            hist_data = self.processing.getSegmentedRegionHistogram()
+
+            if hist_data:
+                # 2. Generar y guardar la imagen del gráfico con Documentation
+                img_path = self.doc.createHistogramImage(hist_data)
+                QMessageBox.information(self, 
+                                        "Histograma Exportado", 
+                                        f"El histograma se ha guardado como {img_path}")
+            else:
+                QMessageBox.warning(self, 
+                                    "Error", 
+                                    "No se pudieron calcular los datos del histograma.")
+        else:
+            QMessageBox.warning(self, 
+                                "Máscara no encontrada", 
+                                "Por favor, corre la segmentación antes de exportar el histograma.")
+    
+    def openColorDialog(self) -> None:
+        if self.processing:
+            r,g,b = self.processing.getFeatheredMaskColor().tolist()
             default_color = QColor.fromRgb(r,g,b)
             new_color = QColorDialog.getColor(default_color, self, "Elige un color")
             if new_color.isValid():
                 r = new_color.red()
                 g = new_color.green()
                 b = new_color.blue()
-                self.segment.setMaskColor([r,g,b])
+                self.processing.setFeatheredMaskColor([r,g,b])
         else:
             QMessageBox.warning(self, 
                                 "Imagen no encontrada", 
