@@ -1,14 +1,18 @@
 import sys
 from PySide6.QtCore import Qt
 from PySide6.QtGui import (QPixmap, QImage, QPainter, QColor)
-from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QGraphicsScene, QGraphicsView, QFileDialog, QColorDialog, QGraphicsPixmapItem, QGraphicsEllipseItem, QPushButton, QMessageBox)
+from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QGraphicsScene, 
+                                QGraphicsView, QFileDialog, QColorDialog, QGraphicsPixmapItem, QGraphicsEllipseItem, 
+                                QPushButton, QMessageBox, QFrame, QCheckBox, QGroupBox, QLabel)
 
 import numpy as np
 import torch
 import cv2
+from skimage.color import (deltaE_ciede2000, lab2rgb)
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
+import json
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
@@ -41,7 +45,7 @@ class Documentation():
                 
                 if j == 0:
                     ax.set_ylabel(f'r = {r}', fontsize=12, rotation=90, labelpad=7, ha='center', va='center')
-        img_path = "images/filter_comparison_image.png"
+        img_path = "resources/exported_images/filter_comparison_image.png"
         plt.subplots_adjust(wspace=0.0, hspace=0.0)
         plt.savefig(img_path, dpi=300, bbox_inches='tight')
         return img_path
@@ -58,7 +62,7 @@ class Documentation():
         raw_patch = mpatches.Patch(color=raw_color, label='Máscara cruda')
         feathered_patch = mpatches.Patch(color=feathered_color, label='Máscara filtrada')
         ax.legend(handles=[raw_patch, feathered_patch], loc='upper right')
-        img_path = "images/mask_comparison_image.png"
+        img_path = "resources/exported_images/mask_comparison_image.png"
         plt.savefig(img_path, dpi=300, bbox_inches='tight')
         return img_path
     
@@ -83,7 +87,7 @@ class Documentation():
         ax.grid(True, linestyle='--', alpha=0.6)
         ax.set_xlim([0, 256]) # El rango de intensidad de color es de 0 a 255
 
-        img_path = "images/histogram_image.png"
+        img_path = "resources/exported_images/histogram_image.png"
         plt.tight_layout()
         plt.savefig(img_path, dpi=300, bbox_inches='tight')
         
@@ -110,6 +114,11 @@ class ImageProcessing():
         self.raw_mask_color = 255 - self.feathered_mask_color
         self.r_filter = 2
         self.eps_filter = 0.3**2
+        self.main_color = None
+        self.pantone_database_path="resources/pantone_databases/PANTONE Solid Coated-V4.json"
+
+        # Load PANTONE database
+        self.loadPantoneDatabase()
 
         # Create SAM2 predictor
         device = torch.device("cpu")
@@ -201,6 +210,23 @@ class ImageProcessing():
             
         return histograms
 
+    def loadPantoneDatabase(self) -> None:
+        with open(self.pantone_database_path, "r", encoding='utf-8') as f:
+            pantone_db = json.load(f)
+            self.pantone_lab_colors = np.array([p["components"] for p in pantone_db["records"].values()], dtype=np.float32)
+            self.pantone_name_colors = np.array([p["name"] for p in pantone_db["records"].values()], dtype=np.str_)
+    
+    def findNearestPantone(self, lab_color: np.array) -> dict:
+        delta_Es = deltaE_ciede2000(np.array([lab_color], dtype=np.float32), self.pantone_lab_colors)
+        idx = np.argmin(delta_Es)
+        name = self.pantone_name_colors[idx]
+        lab = self.pantone_lab_colors[idx]
+        rgb = np.astype(np.round(lab2rgb(lab)*255), np.uint8)
+        return {"Pantone Name": name, "Pantone LAB": lab, "Pantone RGB": rgb}
+    
+    def getMainColor(self) -> dict:
+        return self.main_color
+
     def getColorByWeightedMedian(self) -> np.ndarray:
         # Convertir a LAB en rangos estándar
         image_lab = self.fromRGBtoLAB(self.image)
@@ -230,7 +256,10 @@ class ImageProcessing():
             median_idx = np.searchsorted(cumsum, 0.5)
             dominant_color_lab[channel] = sorted_values[median_idx]
         
-        return dominant_color_lab
+        self.main_color = self.findNearestPantone(dominant_color_lab)
+        self.main_color["Original LAB"] = dominant_color_lab
+
+        return self.main_color
 
     def getColorByKMeans(n_clusters: int = 3,
                             min_weight_threshold: float = 0.3) -> np.ndarray:
@@ -508,11 +537,18 @@ class MainWindow(QMainWindow):
 
         # Window Settings
         self.setWindowTitle("GUI")
-        self.resize(1200, 700)
+        #self.setFixedWidth(1020)
+        #self.setFixedHeight(720)
+        #self.setFixedSize(1020, 720)  # Tamaño fijo de la ventana
+        #self.setMinimumSize(1020, 720)
+        #self.setMaximumSize(1020, 720)
 
         # Widgets
         self.viewer = Viewer()
-        #self.viewer.setImageFromPath("/home/ddgiraldo/Thesis/Test SAM2/images/bac.jpg")
+        self.viewer.setFixedSize(720, 720)
+
+        # Panel lateral derecho
+        self.side_panel = self.createSidePanel()
 
         # Menu Bar
         menu_bar = self.menuBar()
@@ -539,13 +575,16 @@ class MainWindow(QMainWindow):
         action_delete_mask = menu_edit.addAction("Eliminar máscara")
         action_delete_mask.triggered.connect(self.viewer.clearMask)
         
-        menu_run = menu_bar.addMenu("Correr")
-        action_run = menu_run.addAction("Segmentar")
-        action_run.triggered.connect(self.runSegmentation)
+        menu_run = menu_bar.addMenu("Cámara")
+        action_color_calibration = menu_run.addAction("Calibrar color")
 
         # Layouts
         main_layout = QHBoxLayout()
+        main_layout.setContentsMargins(10, 10, 10, 10) 
+        main_layout.setSpacing(20)
         main_layout.addWidget(self.viewer)
+        main_layout.addWidget(self.side_panel)
+        main_layout.addStretch()
 
         # Containers and Layouts
         container = QWidget()
@@ -569,19 +608,151 @@ class MainWindow(QMainWindow):
             color: white;             /* Cambia el color del texto a blanco */
             border: 1px solid #26709e;
         }
+        QGroupBox {
+            font-weight: bold;
+            border: 1px solid #cccccc;
+            border-radius: 5px;
+            margin-top: 0px;
+            padding-top: 10px;
+        }
+        QGroupBox::title {
+            subcontrol-origin: margin;
+            left: 10px;
+            padding: 0 5px;
+            color: #444444;
+        }
         """
         # Aplica la hoja de estilos a toda la ventana
         self.setStyleSheet(styles)
 
     # Methods
+    def createSidePanel(self) -> QWidget:
+        """Crea el panel lateral con controles"""
+        panel = QWidget()
+        panel.setFixedWidth(300)
+        
+        layout = QVBoxLayout()
+        layout.setAlignment(Qt.AlignTop)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(20)
+        
+        # Botones
+        self.group_box_button = QWidget()
+        group_button_layout = QVBoxLayout()
+        group_button_layout.setContentsMargins(0, 0, 0, 0) 
+        group_button_layout.setSpacing(6)
+
+        self.button_take_photo = QPushButton("Tomar Foto")
+        self.button_take_photo.clicked.connect(self.onSampleButtonClicked)
+        self.button_take_photo.setFixedHeight(40)
+        group_button_layout.addWidget(self.button_take_photo)
+
+        self.button_run = QPushButton("Segmentar")
+        self.button_run.clicked.connect(self.runSegmentation)
+        self.button_run.setFixedHeight(40)
+        group_button_layout.addWidget(self.button_run)
+
+        self.group_box_button.setLayout(group_button_layout)
+        layout.addWidget(self.group_box_button)
+
+        # Otro separador
+        #line = QFrame()
+        #line.setFrameShape(QFrame.HLine)
+        #line.setFrameShadow(QFrame.Sunken)
+        #layout.addWidget(line)
+
+        self.group_box_others = QWidget()
+        group_others_layout = QVBoxLayout()
+        group_others_layout.setContentsMargins(0, 0, 0, 0) 
+        group_others_layout.setSpacing(8)
+
+        group_box_2 = QGroupBox("Color")
+        group_layout_2 = QVBoxLayout()
+        group_layout_2.setContentsMargins(13, 15, 13, 10) 
+        group_layout_2.setSpacing(10)
+        
+        # Widget de color (Pantone-style)
+        self.color_label = QLabel("Pantone")
+        self.color_label.setStyleSheet("font-weight: normal;")
+        group_layout_2.addWidget(self.color_label)
+        
+        self.color_display = QFrame()
+        self.color_display.setFixedHeight(80)
+        self.color_display.setFrameShape(QFrame.NoFrame)
+        #self.color_display.setStyleSheet("background-color: rgb(128, 128, 128); border: none;")
+        group_layout_2.addWidget(self.color_display)
+        
+        # Label con valores RGB
+        self.rgb_label = QLabel("Representación RGB")
+        self.rgb_label.setStyleSheet("color: #666; font-size: 11px; font-weight: normal;")
+        self.rgb_label.setAlignment(Qt.AlignCenter)
+        group_layout_2.addWidget(self.rgb_label)
+        
+        group_box_2.setLayout(group_layout_2)
+        group_others_layout.addWidget(group_box_2)
+
+        group_box_1 = QGroupBox("Visualización")
+        group_layout_1 = QVBoxLayout()
+        group_layout_1.setContentsMargins(13, 15, 13, 10) 
+        group_layout_1.setSpacing(7)
+        
+        # Checkbox
+        self.checkbox_show_mask = QCheckBox("Ocultar máscara")
+        self.checkbox_show_mask.setChecked(True)
+        self.checkbox_show_mask.stateChanged.connect(self.onCheckboxChanged)
+        group_layout_1.addWidget(self.checkbox_show_mask)
+
+        self.checkbox_show_points = QCheckBox("Ocultar puntos")
+        self.checkbox_show_points.setChecked(True)
+        self.checkbox_show_points.stateChanged.connect(self.onCheckboxChanged)
+        group_layout_1.addWidget(self.checkbox_show_points)
+
+        group_box_1.setLayout(group_layout_1)
+        group_others_layout.addWidget(group_box_1)
+
+        self.group_box_others.setLayout(group_others_layout)
+        self.group_box_others.hide()
+
+        layout.addWidget(self.group_box_others)
+        layout.addStretch()
+        panel.setLayout(layout)
+        return panel
+    
+    def onSampleButtonClicked(self) -> None:
+        """Ejemplo de función conectada al botón"""
+        self.info_label1.setText("Procesando...")
+        # Aquí puedes agregar tu lógica
+        print("Botón presionado")
+    
+    def onCheckboxChanged(self, state) -> None:
+        """Ejemplo de función conectada al checkbox"""
+        if state == Qt.Checked:
+            print("Checkbox activado")
+        elif state == Qt.Unchecked:
+            print("Checkbox desactivado")
+    
+    def updateColorDisplay(self, color_rgb: dict) -> None:
+        """Actualiza el widget de visualización de color"""
+        r = color_rgb["Pantone RGB"][0]
+        g = color_rgb["Pantone RGB"][1]
+        b = color_rgb["Pantone RGB"][2]
+        pantone = color_rgb["Pantone Name"]
+        self.color_display.setStyleSheet(
+            f"background-color: rgb({r}, {g}, {b}); border: 2px solid #999;"
+        )
+        #self.rgb_label.setText(f"R: {r}  G: {g}  B: {b}")
+        self.color_label.setText(pantone) 
+
     def openImage(self) -> None:
         self.source_img_path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar Imagen", "", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
+            self, "Seleccionar Imagen", "resources/test_images", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
         )
         if self.source_img_path:
             self.viewer.setImageFromPath(self.source_img_path)
             self.processing = ImageProcessing(self.source_img_path)
             self.doc = None
+            if self.group_box_others.isVisible():
+                self.group_box_others.hide()
 
     def runSegmentation(self) -> None:
         if self.source_img_path:
@@ -594,7 +765,11 @@ class MainWindow(QMainWindow):
                 f_color = self.processing.getFeatheredMaskColor()
                 feathered_mask_colored = self.processing.createColoredMask(self.processing.getFeatheredMask(), f_color)
                 self.viewer.addOverlay(self.viewer.fromCV2ToQPixmap(feathered_mask_colored))
-                print(self.processing.getColorByWeightedMedian())
+
+                if not self.group_box_others.isVisible():
+                    self.group_box_others.show()
+
+                self.updateColorDisplay(self.processing.getColorByWeightedMedian())
                 self.doc = Documentation()
             else:
                 QMessageBox.warning(self, 
