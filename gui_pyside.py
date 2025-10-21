@@ -115,10 +115,16 @@ class ImageProcessing():
         self.r_filter = 2
         self.eps_filter = 0.3**2
         self.main_color = None
-        self.pantone_database_path="resources/pantone_databases/PANTONE Solid Coated-V4.json"
 
         # Load PANTONE database
+        self.pantone_database_path="resources/pantone_databases/PANTONE Solid Coated-V4.json"
         self.loadPantoneDatabase()
+
+        # Load image
+        self.original_image = cv2.cvtColor(self.cropSquare(cv2.imread(source_image_path)), cv2.COLOR_BGR2RGB)
+        self.original_image_size = self.original_image.shape[:2]
+        self.scaled_image_size = (720, 720)
+        self.scaled_image = self.decimateImage(self.original_image)
 
         # Create SAM2 predictor
         device = torch.device("cpu")
@@ -126,21 +132,23 @@ class ImageProcessing():
         model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
         sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
         self.predictor = SAM2ImagePredictor(sam2_model)
-
-        # Load image
-        self.image = cv2.cvtColor(cv2.imread(source_image_path), cv2.COLOR_BGR2RGB)
-        self.predictor.set_image(self.image)
+        self.predictor.set_image(self.scaled_image)
 
     # Methods
-        # NO USADA
-    def getOriginalImage(self):
-        return self.image
+    def getOriginalImage(self) -> np.ndarray:
+        return self.original_image
+    
+    def getScaledImage(self) -> np.ndarray:
+        return self.scaled_image
         
     def getRawMask(self):
         return self.raw_mask
     
     def getFeatheredMask(self):
         return self.feathered_mask
+    
+    def getScaledFeatheredMask(self):
+        return self.scaled_feathered_mask
     
         # NO USADA
     def getScore(self):
@@ -161,6 +169,22 @@ class ImageProcessing():
     def getRawMaskColor(self):
         return self.raw_mask_color
 
+    def decimateImage(self, image: np.ndarray, is_mask: bool = False) -> np.ndarray:
+        if not type:
+            method = cv2.INTER_AREA
+        else:
+            method = cv2.INTER_NEAREST
+
+        return cv2.resize(image, self.scaled_image_size, interpolation=method)
+    
+    def interpolateImage(self, image: np.ndarray, is_mask: bool = False) -> np.ndarray:
+        if not type:
+            method = cv2.INTER_CUBIC
+        else:
+            method = cv2.INTER_NEAREST
+
+        return cv2.resize(image, self.original_image_size, interpolation=method)
+
     def setInputPointArray(self, input_point_list) -> None:
         self.input_point = np.array(input_point_list)
     
@@ -173,11 +197,11 @@ class ImageProcessing():
                                         point_labels=self.input_label,
                                         multimask_output=False,
                                         )
-        self.raw_mask = self.raw_mask[0]
+        self.raw_mask = self.interpolateImage(self.raw_mask[0], is_mask=True)
         self.score = self.score[0]
 
     def guidedFilter(self, radius=15, eps=0.01) -> None:
-        guide_I = self.image.astype(np.float32)/255.0
+        guide_I = self.original_image.astype(np.float32)/255.0
         mask_p = self.raw_mask.astype(np.float32)
 
         self.feathered_mask = cv2.ximgproc.guidedFilter(
@@ -186,9 +210,10 @@ class ImageProcessing():
                             radius=radius,
                             eps=eps
                         )
+        self.scaled_feathered_mask = self.decimateImage(self.feathered_mask)
 
     def getSegmentedRegionHistogram(self):
-        if self.feathered_mask is None or self.image is None:
+        if self.feathered_mask is None or self.original_image is None:
             print("La máscara o la imagen no han sido generadas todavía.")
             return None
         
@@ -205,7 +230,7 @@ class ImageProcessing():
             # - binary_mask_uint8: La máscara. Solo los píxeles donde la máscara es no-cero se incluyen.
             # - [256]: El número de "bins" o niveles de intensidad (0 a 255).
             # - [0, 256]: El rango de intensidad.
-            hist = cv2.calcHist([self.image], [i], binary_mask_uint8, [256], [0, 256])
+            hist = cv2.calcHist([self.original_image], [i], binary_mask_uint8, [256], [0, 256])
             histograms[color] = hist
             
         return histograms
@@ -229,7 +254,7 @@ class ImageProcessing():
 
     def getColorByWeightedMedian(self) -> np.ndarray:
         # Convertir a LAB en rangos estándar
-        image_lab = self.fromRGBtoLAB(self.image)
+        image_lab = self.fromRGBtoLAB(self.original_image)
 
         # Filtrar pixels con peso significativo (> 0 para incluir toda la gradación)
         valid_mask: bool = self.feathered_mask > 0
@@ -264,7 +289,7 @@ class ImageProcessing():
     def getColorByKMeans(n_clusters: int = 3,
                             min_weight_threshold: float = 0.3) -> np.ndarray:
         # Convertir a LAB en rangos estándar
-        image_lab = self.fromRGBtoLAB(self.image)
+        image_lab = self.fromRGBtoLAB(self.original_image)
         
         # Filtrar pixels con peso significativo
         valid_mask: bool = self.feathered_mask > min_weight_threshold
@@ -327,6 +352,33 @@ class ImageProcessing():
         masked_image_uint8 = (masked_image_float * 255).astype(np.uint8)
 
         return masked_image_uint8
+    
+    @staticmethod
+    def cropSquare(image):
+        """
+        Crops the image from the center to make it square (1:1 ratio)
+        Uses the smallest side as reference
+        
+        Args:
+            image: Input image (numpy array)
+            
+        Returns:
+            Square cropped image centered on the original
+        """
+        height, width = image.shape[:2]
+        
+        # The square side will be the smaller of the two dimensions
+        square_side = min(width, height)
+        
+        # Calculate the starting point for the crop (centered)
+        start_x = (width - square_side) // 2
+        start_y = (height - square_side) // 2
+        
+        # Crop the image
+        square_image = image[start_y:start_y + square_side, 
+                            start_x:start_x + square_side]
+        
+        return square_image
 
 
 class Viewer(QGraphicsView):
@@ -354,11 +406,12 @@ class Viewer(QGraphicsView):
         self.viewport().setCursor(Qt.ArrowCursor) # Changes cursor shape
 
     # Methods
+    """
     def setImageFromPath(self, source_img_path):
         pixmap = QPixmap(source_img_path)
         self.setImageFromPixmap(pixmap)
-
-    def setImageFromPixmap(self, pixmap: QPixmap):
+    """
+    def setImageFromPixmap(self, pixmap: QPixmap) -> None:
         self.scene.clear()
         self.mask_item = None               # <-- Olvida la referencia a la máscara anterior.
         self.point_coordinates.clear()      # <-- Limpia la lista de coordenadas.
@@ -369,7 +422,7 @@ class Viewer(QGraphicsView):
         self.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
         self.scene_rect = self.scene.itemsBoundingRect()
     
-    def addOverlay(self, pixmap: QPixmap):
+    def addOverlay(self, pixmap: QPixmap) -> None:
         """
         Añade un QPixmap como una capa superpuesta sobre la imagen principal.
         Si ya existe una capa anterior, la elimina primero.
@@ -393,12 +446,12 @@ class Viewer(QGraphicsView):
     def getPointLabels(self):
         return self.point_labels
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         if self.pixmap_item:
             self.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
     
-    def wheelEvent(self, event):
+    def wheelEvent(self, event) -> None:
         factor_zoom = 1.1
         if event.angleDelta().y() > 0:
             # Zoom in
@@ -413,11 +466,11 @@ class Viewer(QGraphicsView):
 
         self.scale(factor, factor)
     
-    def enterEvent(self, event):
+    def enterEvent(self, event) -> None:
         self.viewport().setCursor(Qt.ArrowCursor)
         super().enterEvent(event)
     
-    def mouseMoveEvent(self, event):
+    def mouseMoveEvent(self, event) -> None:
         # Si el botón izquierdo está presionado y tenemos una posición de inicio...
         if event.buttons() == Qt.LeftButton and self.click_pos:
             # Calculamos la distancia desde el punto de inicio
@@ -431,7 +484,7 @@ class Viewer(QGraphicsView):
         # Pasamos el evento a la clase base para que el paneo funcione
         super().mouseMoveEvent(event)
 
-    def mouseReleaseEvent(self, event):
+    def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.LeftButton and not self.is_panning:
             if self.pixmap_item:
                 coordinates = self.mapToScene(event.position().toPoint()).toPoint()
@@ -461,7 +514,7 @@ class Viewer(QGraphicsView):
         super().mouseReleaseEvent(event)
         self.viewport().setCursor(Qt.ArrowCursor)
     
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event) -> None:
         # Solo nos interesa el clic izquierdo para iniciar la lógica
         if event.button() == Qt.LeftButton and self.pixmap_item:
             self.click_pos = event.position()
@@ -503,6 +556,15 @@ class Viewer(QGraphicsView):
             self.marker_items.clear()
             self.point_coordinates.clear()
             self.point_labels.clear()
+        
+    def showMask(self, show: bool) -> None:
+        if self.mask_item:
+            self.mask_item.setVisible(show)
+    
+    def showAllPoints(self, show: bool) -> None:
+        if self.marker_items:
+            for marker in self.marker_items:
+                marker.setVisible(show)
     
     def clearLastPoint(self) -> None:
         if self.marker_items:
@@ -557,8 +619,6 @@ class MainWindow(QMainWindow):
         action_open_img = menu_file.addAction("Abrir Imagen")
         action_open_img.triggered.connect(self.openImage)
         submenu_extract = menu_file.addMenu("Extraer")
-        action_extract_mask_comparison = submenu_extract.addAction("Comparación máscaras")
-        action_extract_mask_comparison.triggered.connect(self.exportMaskComparisonImage)
         action_extract_filter_comparison = submenu_extract.addAction("Comparación filtro guiado")
         action_extract_filter_comparison.triggered.connect(self.exportFeatheredComparisonImage)
         action_extract_histogram = submenu_extract.addAction("Histograma de color")
@@ -698,13 +758,13 @@ class MainWindow(QMainWindow):
         
         # Checkbox
         self.checkbox_show_mask = QCheckBox("Ocultar máscara")
-        self.checkbox_show_mask.setChecked(True)
-        self.checkbox_show_mask.stateChanged.connect(self.onCheckboxChanged)
+        self.checkbox_show_mask.setChecked(False)
+        self.checkbox_show_mask.stateChanged.connect(self.hideMask)
         group_layout_1.addWidget(self.checkbox_show_mask)
 
         self.checkbox_show_points = QCheckBox("Ocultar puntos")
-        self.checkbox_show_points.setChecked(True)
-        self.checkbox_show_points.stateChanged.connect(self.onCheckboxChanged)
+        self.checkbox_show_points.setChecked(False)
+        self.checkbox_show_points.stateChanged.connect(self.hidePoints)
         group_layout_1.addWidget(self.checkbox_show_points)
 
         group_box_1.setLayout(group_layout_1)
@@ -724,12 +784,19 @@ class MainWindow(QMainWindow):
         # Aquí puedes agregar tu lógica
         print("Botón presionado")
     
-    def onCheckboxChanged(self, state) -> None:
+    def hideMask(self, state) -> None:
         """Ejemplo de función conectada al checkbox"""
-        if state == Qt.Checked:
-            print("Checkbox activado")
-        elif state == Qt.Unchecked:
-            print("Checkbox desactivado")
+        if state == 2:
+            self.viewer.showMask(False)
+        else:
+            self.viewer.showMask(True)
+
+    def hidePoints(self, state) -> None:
+        """Ejemplo de función conectada al checkbox"""
+        if state == 2:
+            self.viewer.showAllPoints(False)
+        else:
+            self.viewer.showAllPoints(True)
     
     def updateColorDisplay(self, color_rgb: dict) -> None:
         """Actualiza el widget de visualización de color"""
@@ -748,8 +815,8 @@ class MainWindow(QMainWindow):
             self, "Seleccionar Imagen", "resources/test_images", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
         )
         if self.source_img_path:
-            self.viewer.setImageFromPath(self.source_img_path)
             self.processing = ImageProcessing(self.source_img_path)
+            self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.processing.getScaledImage()))            
             self.doc = None
             if self.group_box_others.isVisible():
                 self.group_box_others.hide()
@@ -763,7 +830,7 @@ class MainWindow(QMainWindow):
                 self.processing.guidedFilter(self.processing.getFilterR(),
                                                 self.processing.getFilterEPS())
                 f_color = self.processing.getFeatheredMaskColor()
-                feathered_mask_colored = self.processing.createColoredMask(self.processing.getFeatheredMask(), f_color)
+                feathered_mask_colored = self.processing.createColoredMask(self.processing.getScaledFeatheredMask(), f_color)
                 self.viewer.addOverlay(self.viewer.fromCV2ToQPixmap(feathered_mask_colored))
 
                 if not self.group_box_others.isVisible():
@@ -786,22 +853,6 @@ class MainWindow(QMainWindow):
     def exportFeatheredComparisonImage(self) -> None:
         if self.doc:
             img_path = self.doc.createGuidedFilterComparisonImage(self.processing)
-            QMessageBox.information(self, 
-                                "Imagen exportada exitosamente", 
-                                f"Guardada como {img_path}")
-        else:
-            QMessageBox.warning(self, 
-                                "Mascara no encontrada", 
-                                "Por favor, correr la segmentación antes de exportar la imagen.")
-    
-    def exportMaskComparisonImage(self) -> None:
-        if self.doc:
-            r_color = self.processing.getRawMaskColor()
-            raw_mask_colored = self.processing.createColoredMask(self.processing.getRawMask(), r_color)
-            f_color = self.processing.getFeatheredMaskColor()
-            feathered_mask_colored = self.processing.createColoredMask(self.processing.getFeatheredMask(), f_color)
-            img_path = self.doc.createMaskComparisionImage(raw_mask_colored, r_color,
-                                                            feathered_mask_colored, f_color)
             QMessageBox.information(self, 
                                 "Imagen exportada exitosamente", 
                                 f"Guardada como {img_path}")
