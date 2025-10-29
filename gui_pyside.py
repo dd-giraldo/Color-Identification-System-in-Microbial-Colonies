@@ -1,11 +1,14 @@
 import sys
+import os
 from PySide6.QtCore import Qt
-from PySide6.QtGui import (QPixmap, QImage, QPainter, QColor)
+from PySide6.QtGui import (QPixmap, QImage, QPainter, QColor, QPalette)
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QGraphicsScene, 
                                 QGraphicsView, QFileDialog, QColorDialog, QGraphicsPixmapItem, QGraphicsEllipseItem, 
-                                QPushButton, QMessageBox, QFrame, QCheckBox, QGroupBox, QLabel)
+                                QPushButton, QMessageBox, QFrame, QCheckBox, QGroupBox, QLabel, QLineEdit)
 
 import numpy as np
+import pandas as pd
+import pickle
 import torch
 import cv2
 from skimage.color import (deltaE_ciede2000, lab2rgb)
@@ -15,6 +18,7 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 import json
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import csv
 
 class Documentation():
     def __init__(self) -> None:
@@ -102,8 +106,91 @@ class Documentation():
     def getListEPS(self) -> list[float]:
         return self.list_eps
 
+class Calibration():
+    def __init__(self) -> None:
+        self.color_checker_img_path = "resources/calibration/color_checker.jpg"
+        self.params_path = "resources/calibration/calibration_params.pickle"
+
+    def getParamsPath(self):
+        return self.params_path
+    
+    def setColorCheckerPath(self, path) -> None:
+        self.color_checker_img_path = path
+            
+    def detectColorChecker(self):
+        image = cv2.imread(self.color_checker_img_path)
+        # Create a ColorChecker detector
+        detector = cv2.mcc.CCheckerDetector_create()
+    
+        # Process the image to detect the ColorChecker
+        detected = detector.process(image, cv2.mcc.MCC24, 1)
+        
+        if not detected:
+            return None
+
+        # Get the list of detected ColorCheckers
+        checkers = detector.getListColorChecker()
+        
+        for checker in checkers:
+
+            # Get the detected color patches and rearrange them
+            chartsRGB = checker.getChartsRGB()
+            width, height = chartsRGB.shape[:2]
+            src = chartsRGB[:, 1].copy().reshape(int(width / 3), 1, 3) / 255.0
+            
+            return src
+        
+        return None
+    
+    def saveCalibrationParams(self, color_patches) -> None:
+        # Save the color patches and configuration to a pickle file
+        params = {
+            'color_patches': color_patches
+        }
+        with open(self.params_path, 'wb') as f:
+            pickle.dump(params, f)
+    
+    def reconstructModelFromParams(self):
+        # Load the color patches and configuration from a pickle file
+        with open(self.params_path, 'rb') as f:
+            params = pickle.load(f)
+
+        # Reconstruct the color correction model from parameters
+        color_patches = params['color_patches']
+        model = cv2.ccm_ColorCorrectionModel(color_patches, cv2.ccm.COLORCHECKER_Macbeth)
+        
+        # Configure the model
+        model.setColorSpace(cv2.ccm.COLOR_SPACE_sRGB)
+        model.setCCM_TYPE(cv2.ccm.CCM_3x3)
+        model.setDistance(cv2.ccm.DISTANCE_CIE2000)
+        model.setLinear(cv2.ccm.LINEARIZATION_GAMMA)
+        model.setLinearGamma(2.2)
+        model.setLinearDegree(3)
+        model.setSaturatedThreshold(0, 0.98)
+        
+        # Run the model
+        model.run()
+        return model
+    
+    @staticmethod
+    def applyColorCorrection(image, model):
+        # Apply color correction to the image
+        image = image.astype(np.float64) / 255.0
+
+        # Perform inference with the model
+        calibrated_image = model.infer(image)
+        out_ = calibrated_image * 255
+        out_[out_ < 0] = 0
+        out_[out_ > 255] = 255
+        out_img = out_.astype(np.uint8)
+
+        # Convert back to BGR
+        #out_img = cv2.cvtColor(out_, cv2.COLOR_RGB2BGR)
+        return out_img
+
+
 class ImageProcessing():
-    def __init__(self, source_image_path) -> None:
+    def __init__(self, source_image_path, calibration: Calibration) -> None:
         # Attributes
         self.raw_mask = None
         self.score = None
@@ -122,6 +209,8 @@ class ImageProcessing():
 
         # Load image
         self.original_image = cv2.cvtColor(self.cropSquare(cv2.imread(source_image_path)), cv2.COLOR_BGR2RGB)
+        model = calibration.reconstructModelFromParams()
+        self.original_image = calibration.applyColorCorrection(self.original_image, model)
         self.original_image_size = self.original_image.shape[:2]
         self.scaled_image_size = (720, 720)
         self.scaled_image = self.decimateImage(self.original_image)
@@ -135,8 +224,8 @@ class ImageProcessing():
         self.predictor.set_image(self.scaled_image)
 
     # Methods
-    def getOriginalImage(self) -> np.ndarray:
-        return self.original_image
+    def saveOriginalImage(self, path) -> np.ndarray:
+        cv2.imwrite(path, cv2.cvtColor(self.original_image, cv2.COLOR_RGB2BGR))
     
     def getScaledImage(self) -> np.ndarray:
         return self.scaled_image
@@ -214,7 +303,6 @@ class ImageProcessing():
 
     def getSegmentedRegionHistogram(self):
         if self.feathered_mask is None or self.original_image is None:
-            print("La máscara o la imagen no han sido generadas todavía.")
             return None
         
         _, binary_mask_uint8 = cv2.threshold(self.feathered_mask, 0.5, 255, cv2.THRESH_BINARY)
@@ -247,12 +335,14 @@ class ImageProcessing():
         name = self.pantone_name_colors[idx]
         lab = self.pantone_lab_colors[idx]
         rgb = np.astype(np.round(lab2rgb(lab)*255), np.uint8)
-        return {"Pantone Name": name, "Pantone LAB": lab, "Pantone RGB": rgb}
+        return {"Pantone Name": name, "Pantone LAB": lab, "Pantone RGB": rgb, "Delta E": delta_Es[idx]}
     
     def getMainColor(self) -> dict:
         return self.main_color
 
     def getColorByWeightedMedian(self) -> np.ndarray:
+        if self.original_image.size <= 0:
+            return None
         # Convertir a LAB en rangos estándar
         image_lab = self.fromRGBtoLAB(self.original_image)
 
@@ -411,6 +501,12 @@ class Viewer(QGraphicsView):
         pixmap = QPixmap(source_img_path)
         self.setImageFromPixmap(pixmap)
     """
+    def clearVariables(self) -> None:
+        self.mask_item = None
+        self.point_coordinates = []
+        self.point_labels = []
+        self.marker_items = []
+
     def setImageFromPixmap(self, pixmap: QPixmap) -> None:
         self.scene.clear()
         self.mask_item = None               # <-- Olvida la referencia a la máscara anterior.
@@ -550,9 +646,9 @@ class Viewer(QGraphicsView):
     
     def clearAllPoints(self) -> None:
         if self.marker_items:
-            for marker in self.marker_items:
+            for i, marker in enumerate(self.marker_items):
                 self.scene.removeItem(marker)
-
+            
             self.marker_items.clear()
             self.point_coordinates.clear()
             self.point_labels.clear()
@@ -591,14 +687,16 @@ class MainWindow(QMainWindow):
     # Initialization
     def __init__(self) -> None:
         super().__init__()
-
         # Attributes
+        FONT_FAMILY = 'Sans Serif'
+        
         self.source_img_path = None
         self.processing = None
         self.doc = None
+        self.calibration = Calibration()
 
         # Window Settings
-        self.setWindowTitle("GUI")
+        self.setWindowTitle("SACISMC")
         #self.setFixedWidth(1020)
         #self.setFixedHeight(720)
         #self.setFixedSize(1020, 720)  # Tamaño fijo de la ventana
@@ -610,15 +708,16 @@ class MainWindow(QMainWindow):
         self.viewer.setFixedSize(720, 720)
 
         # Panel lateral derecho
-        self.side_panel = self.createSidePanel()
+        side_panel = self.createSidePanel()
 
         # Menu Bar
         menu_bar = self.menuBar()
-
         menu_file = menu_bar.addMenu("Archivo")
-        action_open_img = menu_file.addAction("Abrir Imagen")
+        action_open_img = menu_file.addAction("Abrir imagen")
         action_open_img.triggered.connect(self.openImage)
-        submenu_extract = menu_file.addMenu("Extraer")
+        submenu_extract = menu_file.addMenu("Exportar")
+        action_extract_img = submenu_extract.addAction("Imagen original")
+        action_extract_img.triggered.connect(self.saveImage)
         action_extract_filter_comparison = submenu_extract.addAction("Comparación filtro guiado")
         action_extract_filter_comparison.triggered.connect(self.exportFeatheredComparisonImage)
         action_extract_histogram = submenu_extract.addAction("Histograma de color")
@@ -626,60 +725,131 @@ class MainWindow(QMainWindow):
 
 
         menu_edit = menu_bar.addMenu("Editar")
+        #menu_edit.setFont(self.menus_font)
         action_mask_color = menu_edit.addAction("Cambiar color máscara")
         action_mask_color.triggered.connect(self.openColorDialog)
-        action_delete_last_point = menu_edit.addAction("Eliminar el último punto")
+        submenu_delete = menu_edit.addMenu("Eliminar")
+        action_mask_color.triggered.connect(self.openColorDialog)
+        action_delete_last_point = submenu_delete.addAction("Último punto")
         action_delete_last_point.triggered.connect(self.viewer.clearLastPoint)
-        action_delete_all_points = menu_edit.addAction("Eliminar todos los puntos")
+        action_delete_all_points = submenu_delete.addAction("Todos los puntos")
         action_delete_all_points.triggered.connect(self.viewer.clearAllPoints)
-        action_delete_mask = menu_edit.addAction("Eliminar máscara")
+        action_delete_mask = submenu_delete.addAction("Máscara")
         action_delete_mask.triggered.connect(self.viewer.clearMask)
         
-        menu_run = menu_bar.addMenu("Cámara")
-        action_color_calibration = menu_run.addAction("Calibrar color")
+        menu_calibrate = menu_bar.addMenu("Calibrar")
+        action_select_checker = menu_calibrate.addAction("Seleccionar imagen Color Checker")
+        action_select_checker.triggered.connect(self.selectColorCheckerimage)
+        action_create_params = menu_calibrate.addAction("Crear parámetros de calibración")
+        action_create_params.triggered.connect(self.createCalibrationParams)
 
-        # Layouts
+        # Main Layout
         main_layout = QHBoxLayout()
         main_layout.setContentsMargins(10, 10, 10, 10) 
         main_layout.setSpacing(20)
         main_layout.addWidget(self.viewer)
-        main_layout.addWidget(self.side_panel)
+        main_layout.addWidget(side_panel)
         main_layout.addStretch()
 
         # Containers and Layouts
-        container = QWidget()
-        container.setObjectName("MainContainer")
-        container.setLayout(main_layout)
-        self.setCentralWidget(container)
+        main_container = QWidget()
+        main_container.setObjectName("MainContainer")
+        main_container.setLayout(main_layout)
+        self.setCentralWidget(main_container)
 
         # Styles
         styles = """
+        QMainWindow {
+            background-color: #2d2d2d;
+        }
         QMenuBar {
-            font-size: 14px; /* Tamaño de la fuente para la barra principal (Archivo, Editar, etc.) */
+            background-color: #2d2d2d;
+            color: #e0e0e0;
+            font-size: 14px;
+            spacing: 0px;
+            padding: 0px;
+            margin: 10px 10px 10px 10px;
+            border-bottom: 1px solid #707070;
+        }
+        QMenuBar::item {
+            padding: 5px 8px 5px 8px;
+            margin: 0px;
+        }
+        QMenuBar::item:selected {
+            background: #424242;
+            border-top-left-radius: 5px;
+            border-top-right-radius: 5px;
         }
         QMenu {
-            font-size: 13px; /* Tamaño de la fuente para los menús desplegables */
+            font-size: 14px;
+            background-color: #464646;
+            color: #e0e0e0;
+            padding: 6px 0px;
         }
         QMenu::item {
-            padding: 5px 8px; 
+            padding: 4px 8px 5px 24px;
+            margin: 0px 6px;
         }
         QMenu::item:selected {
-            background-color: #308cc6; /* Un color azul para resaltar */
-            color: white;             /* Cambia el color del texto a blanco */
-            border: 1px solid #26709e;
+            background-color: #308cc6;
+            color: white;
+            border-radius: 10px;
+        }
+        QPushButton{
+            font-weight: bold;
+            font-size: 14px;
+            padding: 5px;
+            margin: 0px;
+            border: 1px solid #707070;
+            border-radius: 7px;
+            background-color: #424242;
+            color: #e0e0e0;
+        }
+        QPushButton:hover {
+            background-color: #313131;
+            border: 0px solid #707070;
+        }
+        QGraphicsView {
+            background-color: #313131;
+            border: 0px solid #bdbdbd;
         }
         QGroupBox {
             font-weight: bold;
-            border: 1px solid #cccccc;
-            border-radius: 5px;
-            margin-top: 0px;
-            padding-top: 10px;
+            border: 1px solid #707070;
+            border-radius: 7px;
+            margin-top: 1ex;
+            padding-top: 5px;
         }
         QGroupBox::title {
             subcontrol-origin: margin;
             left: 10px;
-            padding: 0 5px;
-            color: #444444;
+            padding: 0 3px;
+            color: #e0e0e0;
+        }
+        QLabel {
+            color: #e0e0e0;
+            font-size: 13px;
+            font-weight: normal;
+        }
+        QCheckBox {
+            color: #e0e0e0;
+        }
+        QCheckBox::indicator {
+            width: 14px;
+            height: 14px;
+            border: 1px solid #e0e0e0;
+            border-radius: 3px;
+            background-color: #e0e0e0;/*606060*/
+        }
+        QCheckBox::indicator:checked {
+            width: 14px;
+            height: 14px;
+            border: 1px solid #e0e0e0;
+            border-radius: 3px;
+            background-color: #2b2b2b;
+        }
+        QDialog {
+            background-color: #373737;
         }
         """
         # Aplica la hoja de estilos a toda la ventana
@@ -703,13 +873,15 @@ class MainWindow(QMainWindow):
         group_button_layout.setSpacing(6)
 
         self.button_take_photo = QPushButton("Tomar Foto")
-        self.button_take_photo.clicked.connect(self.onSampleButtonClicked)
-        self.button_take_photo.setFixedHeight(40)
+        self.button_take_photo.clicked.connect(self.takePhotoClicked)
+        self.button_take_photo.setFixedHeight(50) #40
         group_button_layout.addWidget(self.button_take_photo)
+
+        print(self.button_take_photo.styleSheet())
 
         self.button_run = QPushButton("Segmentar")
         self.button_run.clicked.connect(self.runSegmentation)
-        self.button_run.setFixedHeight(40)
+        self.button_run.setFixedHeight(50) #40
         group_button_layout.addWidget(self.button_run)
 
         self.group_box_button.setLayout(group_button_layout)
@@ -724,51 +896,79 @@ class MainWindow(QMainWindow):
         self.group_box_others = QWidget()
         group_others_layout = QVBoxLayout()
         group_others_layout.setContentsMargins(0, 0, 0, 0) 
-        group_others_layout.setSpacing(8)
+        group_others_layout.setSpacing(10)
 
-        group_box_2 = QGroupBox("Color")
-        group_layout_2 = QVBoxLayout()
-        group_layout_2.setContentsMargins(13, 15, 13, 10) 
-        group_layout_2.setSpacing(10)
+        group_box_1 = QGroupBox("Color")
+        group_layout_1 = QVBoxLayout()
+        group_layout_1.setContentsMargins(13, 15, 13, 10) 
+        group_layout_1.setSpacing(8)
         
-        # Widget de color (Pantone-style)
-        self.color_label = QLabel("Pantone")
-        self.color_label.setStyleSheet("font-weight: normal;")
-        group_layout_2.addWidget(self.color_label)
+        # Widget de color
+        self.color_pantone = QLabel("PANTONE")
+        self.color_pantone.setStyleSheet("font-weight: bold;")
+        group_layout_1.addWidget(self.color_pantone)
+
+        self.color_lab = QLabel("LAB")
+        #self.color_lab.setStyleSheet("font-weight: normal;")
+        group_layout_1.addWidget(self.color_lab)
+
+        self.color_delta = QLabel("DELTA E")
+        #self.color_delta.setStyleSheet("font-weight: normal;")
+        group_layout_1.addWidget(self.color_delta)
         
         self.color_display = QFrame()
         self.color_display.setFixedHeight(80)
-        self.color_display.setFrameShape(QFrame.NoFrame)
+        self.color_display.setFrameStyle(QFrame.Box)
         #self.color_display.setStyleSheet("background-color: rgb(128, 128, 128); border: none;")
-        group_layout_2.addWidget(self.color_display)
+        group_layout_1.addWidget(self.color_display)
         
         # Label con valores RGB
         self.rgb_label = QLabel("Representación RGB")
-        self.rgb_label.setStyleSheet("color: #666; font-size: 11px; font-weight: normal;")
+        self.rgb_label.setStyleSheet("font-size: 11px;")
         self.rgb_label.setAlignment(Qt.AlignCenter)
-        group_layout_2.addWidget(self.rgb_label)
+        group_layout_1.addWidget(self.rgb_label)
         
+        group_box_1.setLayout(group_layout_1)
+        group_others_layout.addWidget(group_box_1)
+
+        group_box_2 = QGroupBox("Visualización")
+        group_layout_2 = QVBoxLayout()
+        group_layout_2.setContentsMargins(13, 15, 13, 10) 
+        group_layout_2.setSpacing(7)
+        
+        # Checkbox
+        self.checkbox_hide_mask = QCheckBox("Ocultar máscara")
+        self.checkbox_hide_mask.setChecked(False)
+        self.checkbox_hide_mask.stateChanged.connect(self.hideMask)
+        group_layout_2.addWidget(self.checkbox_hide_mask)
+
+        self.checkbox_hide_points = QCheckBox("Ocultar puntos")
+        self.checkbox_hide_points.setChecked(False)
+        self.checkbox_hide_points.stateChanged.connect(self.hidePoints)
+        group_layout_2.addWidget(self.checkbox_hide_points)
+
         group_box_2.setLayout(group_layout_2)
         group_others_layout.addWidget(group_box_2)
 
-        group_box_1 = QGroupBox("Visualización")
-        group_layout_1 = QVBoxLayout()
-        group_layout_1.setContentsMargins(13, 15, 13, 10) 
-        group_layout_1.setSpacing(7)
-        
-        # Checkbox
-        self.checkbox_show_mask = QCheckBox("Ocultar máscara")
-        self.checkbox_show_mask.setChecked(False)
-        self.checkbox_show_mask.stateChanged.connect(self.hideMask)
-        group_layout_1.addWidget(self.checkbox_show_mask)
+        group_box_3 = QGroupBox("Registro")
+        group_layout_3 = QVBoxLayout()
+        group_layout_3.setContentsMargins(13, 15, 13, 10) 
+        group_layout_3.setSpacing(10)
 
-        self.checkbox_show_points = QCheckBox("Ocultar puntos")
-        self.checkbox_show_points.setChecked(False)
-        self.checkbox_show_points.stateChanged.connect(self.hidePoints)
-        group_layout_1.addWidget(self.checkbox_show_points)
+        self.input_id = QLineEdit()
+        self.input_id.setPlaceholderText("Identificador")
+        self.input_id.setFixedHeight(30)
+        group_layout_3.addWidget(self.input_id)
 
-        group_box_1.setLayout(group_layout_1)
-        group_others_layout.addWidget(group_box_1)
+        self.log_button = QPushButton("Guardar")
+        self.log_button.clicked.connect(self.saveExcel)
+        self.log_button.setFixedHeight(70) #40
+        self.log_button.setStyleSheet("font-size: 16px;")
+        group_layout_3.addWidget(self.log_button)
+
+        group_box_3.setLayout(group_layout_3)
+        group_others_layout.addWidget(group_box_3)
+
 
         self.group_box_others.setLayout(group_others_layout)
         self.group_box_others.hide()
@@ -778,21 +978,16 @@ class MainWindow(QMainWindow):
         panel.setLayout(layout)
         return panel
     
-    def onSampleButtonClicked(self) -> None:
-        """Ejemplo de función conectada al botón"""
-        self.info_label1.setText("Procesando...")
-        # Aquí puedes agregar tu lógica
+    def takePhotoClicked(self) -> None:
         print("Botón presionado")
     
     def hideMask(self, state) -> None:
-        """Ejemplo de función conectada al checkbox"""
         if state == 2:
             self.viewer.showMask(False)
         else:
             self.viewer.showMask(True)
 
     def hidePoints(self, state) -> None:
-        """Ejemplo de función conectada al checkbox"""
         if state == 2:
             self.viewer.showAllPoints(False)
         else:
@@ -800,22 +995,168 @@ class MainWindow(QMainWindow):
     
     def updateColorDisplay(self, color_rgb: dict) -> None:
         """Actualiza el widget de visualización de color"""
-        r = color_rgb["Pantone RGB"][0]
-        g = color_rgb["Pantone RGB"][1]
-        b = color_rgb["Pantone RGB"][2]
-        pantone = color_rgb["Pantone Name"]
-        self.color_display.setStyleSheet(
-            f"background-color: rgb({r}, {g}, {b}); border: 2px solid #999;"
+        if color_rgb is not None:
+            r = color_rgb["Pantone RGB"][0]
+            g = color_rgb["Pantone RGB"][1]
+            b = color_rgb["Pantone RGB"][2]
+            self.color_display.setStyleSheet(
+                f"background-color: rgb({r}, {g}, {b}); border: 2px solid #999;"
+            )
+            #self.rgb_label.setText(f"R: {r}  G: {g}  B: {b}")
+            self.color_pantone.setText(color_rgb["Pantone Name"])
+            self.color_lab.setText(f"LAB: ({color_rgb["Pantone LAB"][0]:.5f}, {color_rgb["Pantone LAB"][1]:.1f}, {color_rgb["Pantone LAB"][2]:.1f})")
+            self.color_delta.setText(f"ΔE00: {color_rgb["Delta E"]:.5f}")
+            self.checkbox_hide_mask.setChecked(False)
+            self.checkbox_hide_points.setChecked(False)
+    
+    def saveCSV(self) -> None:
+        id = self.input_id.text().strip()
+        if not id:
+            QMessageBox.warning(self, "Campo vacío", "Por favor ingrese un identificador antes de guardar.")
+            return None
+        
+        main_color = self.processing.getMainColor()
+
+        color_pantone: str = f"{main_color["Pantone Name"]}"
+        color_lab_pantone: str = f"({main_color["Pantone LAB"][0]:.5f}, {main_color["Pantone LAB"][1]:.1f}, {main_color["Pantone LAB"][2]:.1f})"
+        color_lab_original: str = f"({main_color["Original LAB"][0]:.5f}, {main_color["Original LAB"][1]:.1f}, {main_color["Original LAB"][2]:.1f})"
+        delta_E: str = f"{main_color["Delta E"]:.5f}"
+        img_path: str = f"{os.getcwd()}/registered_images/{id.lower().replace(" ","_")}.png"
+        
+        path_csv = "registros.xlsx"
+        file_exists: bool = os.path.exists(path_csv)
+
+        try:
+            # Abrir el archivo en modo append
+            with open(path_csv, mode='a', newline='', encoding='utf-8') as file:
+                writer = csv.writer(file)
+                
+                # Si el archivo no existe, escribir los headers
+                if not file_exists:
+                    writer.writerow(['Identificador', 'Color PANTONE', 'Color LAB PANTONE', 'Color LAB Original', 
+                                'ΔE00', 'Ubicación Imagen'])
+                
+                # Escribir los datos
+                writer.writerow([id, color_pantone, color_lab_pantone, color_lab_original, 
+                            delta_E, img_path])
+            
+            # Mostrar mensaje de éxito
+            QMessageBox.information(self, "Éxito", 
+                                f"Datos guardados correctamente en {path_csv}")
+            
+            # Limpiar el campo de texto después de guardar
+            self.input_id.clear()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", 
+                            f"Error al guardar los datos: {str(e)}")
+
+    def saveExcel(self) -> None:
+        id = self.input_id.text().strip()
+        if not id:
+            QMessageBox.warning(self, "Campo vacío", "Por favor ingrese un identificador antes de guardar.")
+            return None
+        
+        main_color = self.processing.getMainColor()
+
+        color_pantone: str = f"{main_color["Pantone Name"]}"
+        color_lab_pantone: str = f"({main_color["Pantone LAB"][0]:.5f}, {main_color["Pantone LAB"][1]:.1f}, {main_color["Pantone LAB"][2]:.1f})"
+        color_lab_original: str = f"({main_color["Original LAB"][0]:.5f}, {main_color["Original LAB"][1]:.1f}, {main_color["Original LAB"][2]:.1f})"
+        delta_E: str = f"{main_color["Delta E"]:.5f}"
+        img_path: str = f"{os.getcwd()}/registered_images/{id.lower().replace(" ","_")}.png"
+        
+        path_excel = "registros.xlsx"
+
+        new_data: dict = {
+                            'Identificador': [id],
+                            'Color PANTONE': [color_pantone],
+                            'Color LAB PANTONE': [color_lab_pantone],
+                            'Color LAB Original': [color_lab_original],
+                            'ΔE00': [delta_E],
+                            'Ubicación Imagen': [img_path]
+                        }
+
+        new_df = pd.DataFrame(new_data)
+
+        try:
+            if os.path.exists(path_excel):
+                # Leer el archivo existente
+                existing_df = pd.read_excel(path_excel)
+                
+                # Concatenar los datos existentes con los nuevos
+                final_df = pd.concat([existing_df, new_df], ignore_index=True)
+            else:
+                # Si no existe, usar solo los nuevos datos
+                final_df = new_df
+            
+            # Guardar el DataFrame en Excel
+            final_df.to_excel(path_excel, index=False, engine='openpyxl')
+
+            self.processing.saveOriginalImage(img_path)
+
+            # Mostrar mensaje de éxito
+            QMessageBox.information(self, "Éxito", 
+                                f"Datos guardados correctamente en {path_excel}")
+            
+            # Limpiar el campo de texto después de guardar
+            self.input_id.clear()
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Error", 
+                            f"Error al guardar los datos: {str(e)}")
+
+    
+    def createCalibrationParams(self) -> None:
+        color_patches = self.calibration.detectColorChecker()
+        if color_patches is not None:
+            self.calibration.saveCalibrationParams(color_patches)
+            QMessageBox.information(self, 
+                                    "Parametros de calibracion creados correctamente", 
+                                    f"Guardados como {self.calibration.getParamsPath()}")
+
+    def applyCalibrationParams(self) -> None:
+        print("entra apply")
+
+    def saveImage(self) -> None:
+        if self.source_img_path is None:
+            QMessageBox.warning(self, "Sin imagen", 
+                            "No hay ninguna imagen cargada para guardar.")
+            return None
+
+        file_path, _ = QFileDialog.getSaveFileName(
+                                    self,
+                                    "Guardar imagen como",
+                                    "imagen_sin_titulo.png",                 # Nombre sugerido
+                                    "Imágenes PNG (*.png);;Imágenes JPEG (*.jpg *.jpeg);;Todos los archivos (*.*)"
+                                )
+
+        if not file_path:
+            return None
+
+        try:
+            self.processing.saveOriginalImage(file_path)
+        except Exception as e:
+            QMessageBox.critical(self, "Error", 
+                            f"Error al guardar la imagen: {str(e)}")
+    
+    def selectColorCheckerimage(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Seleccionar Imagen", "resources/calibration", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
         )
-        #self.rgb_label.setText(f"R: {r}  G: {g}  B: {b}")
-        self.color_label.setText(pantone) 
+        if path:
+            self.calibration.setColorCheckerPath(path)
+            QMessageBox.information(self, 
+                                    "Nuevo Color Checker seleccionado", 
+                                    f"Crea nuevamente los parámetros de calibración.")
+
 
     def openImage(self) -> None:
         self.source_img_path, _ = QFileDialog.getOpenFileName(
             self, "Seleccionar Imagen", "resources/test_images", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
         )
         if self.source_img_path:
-            self.processing = ImageProcessing(self.source_img_path)
+            self.processing = ImageProcessing(self.source_img_path, self.calibration)
+            self.viewer.clearVariables()
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.processing.getScaledImage()))            
             self.doc = None
             if self.group_box_others.isVisible():
@@ -842,6 +1183,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, 
                                 "Prompts no encontrados", 
                                 "Por favor, crea los puntos antes de correr la segmentación.")
+                if self.group_box_others.isVisible():
+                    self.group_box_others.hide()
+
                 if self.viewer.mask_item:
                     self.viewer.scene.removeItem(self.viewer.mask_item)
                     self.viewer.mask_item = None
