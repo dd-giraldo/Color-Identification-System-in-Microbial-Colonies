@@ -1,0 +1,46 @@
+{
+    "camera": {
+        "auto_gain": 0,
+        "preset_gain": "Medium",
+        "exposition_time": 18000,
+        "description": "Parámetros de la cámara"
+    },
+    "calibration": {
+        "color_checker_path": "resources/calibration/color_checker.jpg",
+        "calibration_params_path": "resources/calibration/calibration_params.pickle",
+        "description": "Rutas de calibración"
+    },
+    "segmentation": {
+        "scene": {
+            "image_scale_size": 720,
+            "marker_radius": 1
+        },
+        "mask": {
+            "mask_color": [158, 16, 127]
+        },
+        "guided_filter": {
+            "radius": 2,
+            "epsilon": 0.3
+        },
+        "description": "Parámetros de segmentación"
+    },
+    "color": {
+        "pantone": {
+            "database_file": "resources/pantone_databases/PANTONE Solid Coated-V4.json"
+        },
+        "method": {
+            "selected_method": "Median",
+            "threshold_median": 0.0,
+            "threshold_kmeans": 0.3,
+            "number_clusters": 3,
+            "threshold_softvoting": 0.1,
+            "sigma": 10.0,
+            "max_samples": 5000
+        },
+        "description": "Parámetros de estimación de color"
+    },
+    "export": {
+        "dpi": 300,
+        "description": "Parámetros de exportación"
+    }
+}

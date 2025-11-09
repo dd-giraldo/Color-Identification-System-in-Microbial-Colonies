@@ -4,7 +4,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import (QPixmap, QImage, QPainter, QColor, QPalette)
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QGraphicsScene, 
                                 QGraphicsView, QFileDialog, QColorDialog, QGraphicsPixmapItem, QGraphicsEllipseItem, 
-                                QPushButton, QMessageBox, QFrame, QCheckBox, QGroupBox, QLabel, QLineEdit)
+                                QPushButton, QMessageBox, QFrame, QCheckBox, QGroupBox, QLabel, QLineEdit, QTabWidget,
+                                QSpinBox, QDoubleSpinBox, QFormLayout, QDialog, QComboBox)
 
 import numpy as np
 import pandas as pd
@@ -108,17 +109,17 @@ class Documentation():
 
 class Calibration():
     def __init__(self) -> None:
-        self.color_checker_img_path = "resources/calibration/color_checker.jpg"
+        self.default_color_checker_img_path = "resources/calibration/color_checker.jpg"
         self.params_path = "resources/calibration/calibration_params.pickle"
 
     def getParamsPath(self):
         return self.params_path
     
     def setColorCheckerPath(self, path) -> None:
-        self.color_checker_img_path = path
+        self.default_color_checker_img_path = path
             
     def detectColorChecker(self):
-        image = cv2.imread(self.color_checker_img_path)
+        image = cv2.imread(self.default_color_checker_img_path)
         # Create a ColorChecker detector
         detector = cv2.mcc.CCheckerDetector_create()
     
@@ -188,9 +189,8 @@ class Calibration():
         #out_img = cv2.cvtColor(out_, cv2.COLOR_RGB2BGR)
         return out_img
 
-
 class ImageProcessing():
-    def __init__(self, source_image_path, calibration: Calibration) -> None:
+    def __init__(self) -> None:
         # Attributes
         self.raw_mask = None
         self.score = None
@@ -202,18 +202,15 @@ class ImageProcessing():
         self.r_filter = 2
         self.eps_filter = 0.3**2
         self.main_color = None
+        self.top_colors = {}
+        self.scaled_image_size = 720
+        self.pantone_lab_colors = None
+        self.pantone_name_colors = None
+        self.original_image = None
 
         # Load PANTONE database
         self.pantone_database_path="resources/pantone_databases/PANTONE Solid Coated-V4.json"
         self.loadPantoneDatabase()
-
-        # Load image
-        self.original_image = cv2.cvtColor(self.cropSquare(cv2.imread(source_image_path)), cv2.COLOR_BGR2RGB)
-        model = calibration.reconstructModelFromParams()
-        self.original_image = calibration.applyColorCorrection(self.original_image, model)
-        self.original_image_size = self.original_image.shape[:2]
-        self.scaled_image_size = (720, 720)
-        self.scaled_image = self.decimateImage(self.original_image)
 
         # Create SAM2 predictor
         device = torch.device("cpu")
@@ -221,9 +218,18 @@ class ImageProcessing():
         model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
         sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
         self.predictor = SAM2ImagePredictor(sam2_model)
-        self.predictor.set_image(self.scaled_image)
+        
 
     # Methods
+    def loadImage(self, source_image_path, calibration) -> None:
+        # Load image
+        self.original_image = cv2.cvtColor(self.cropSquare(cv2.imread(source_image_path)), cv2.COLOR_BGR2RGB)
+        model = calibration.reconstructModelFromParams()
+        self.original_image = calibration.applyColorCorrection(self.original_image, model)
+        self.original_image_size = self.original_image.shape[:2]
+        self.scaled_image = self.decimateImage(self.original_image)
+        self.predictor.set_image(self.scaled_image)
+
     def saveOriginalImage(self, path) -> np.ndarray:
         cv2.imwrite(path, cv2.cvtColor(self.original_image, cv2.COLOR_RGB2BGR))
     
@@ -259,15 +265,15 @@ class ImageProcessing():
         return self.raw_mask_color
 
     def decimateImage(self, image: np.ndarray, is_mask: bool = False) -> np.ndarray:
-        if not type:
+        if not is_mask:
             method = cv2.INTER_AREA
         else:
             method = cv2.INTER_NEAREST
 
-        return cv2.resize(image, self.scaled_image_size, interpolation=method)
+        return cv2.resize(image, (self.scaled_image_size, self.scaled_image_size), interpolation=method)
     
     def interpolateImage(self, image: np.ndarray, is_mask: bool = False) -> np.ndarray:
-        if not type:
+        if not is_mask:
             method = cv2.INTER_CUBIC
         else:
             method = cv2.INTER_NEAREST
@@ -299,6 +305,7 @@ class ImageProcessing():
                             radius=radius,
                             eps=eps
                         )
+        print(np.max(self.feathered_mask))
         self.scaled_feathered_mask = self.decimateImage(self.feathered_mask)
 
     def getSegmentedRegionHistogram(self):
@@ -331,23 +338,33 @@ class ImageProcessing():
     
     def findNearestPantone(self, lab_color: np.array) -> dict:
         delta_Es = deltaE_ciede2000(np.array([lab_color], dtype=np.float32), self.pantone_lab_colors)
-        idx = np.argmin(delta_Es)
-        name = self.pantone_name_colors[idx]
-        lab = self.pantone_lab_colors[idx]
-        rgb = np.astype(np.round(lab2rgb(lab)*255), np.uint8)
-        return {"Pantone Name": name, "Pantone LAB": lab, "Pantone RGB": rgb, "Delta E": delta_Es[idx]}
+        sorted_3_indx = np.argsort(delta_Es)[:3]
+
+        for i, indx in enumerate(sorted_3_indx):
+            name = self.pantone_name_colors[indx]
+            lab = self.pantone_lab_colors[indx]
+            rgb = np.astype(np.round(lab2rgb(lab)*255), np.uint8)
+            self.top_colors[f"Color {i+1}"] = {
+                                            "Pantone Name": name,
+                                            "LAB": lab,
+                                            "RGB": rgb,
+                                            "ΔE00": delta_Es[indx]
+                                            }
+    
+    def getTopColors(self) -> dict:
+        return self.top_colors
     
     def getMainColor(self) -> dict:
         return self.main_color
 
-    def getColorByWeightedMedian(self) -> np.ndarray:
+    def estimateColorsByWeightedMedian(self, min_weight_threshold: float = 0.0) -> None:
         if self.original_image.size <= 0:
             return None
         # Convertir a LAB en rangos estándar
         image_lab = self.fromRGBtoLAB(self.original_image)
 
         # Filtrar pixels con peso significativo (> 0 para incluir toda la gradación)
-        valid_mask: bool = self.feathered_mask > 0
+        valid_mask: bool = self.feathered_mask > min_weight_threshold
         pixels_lab = image_lab[valid_mask]
         weights = self.feathered_mask[valid_mask]
         
@@ -371,12 +388,9 @@ class ImageProcessing():
             median_idx = np.searchsorted(cumsum, 0.5)
             dominant_color_lab[channel] = sorted_values[median_idx]
         
-        self.main_color = self.findNearestPantone(dominant_color_lab)
-        self.main_color["Original LAB"] = dominant_color_lab
+        self.findNearestPantone(dominant_color_lab)
 
-        return self.main_color
-
-    def getColorByKMeans(n_clusters: int = 3,
+    def estimateColorByKMeans(n_clusters: int = 3,
                             min_weight_threshold: float = 0.3) -> np.ndarray:
         # Convertir a LAB en rangos estándar
         image_lab = self.fromRGBtoLAB(self.original_image)
@@ -416,6 +430,83 @@ class ImageProcessing():
         # Seleccionar cluster con mayor peso acumulado
         dominant_cluster_idx = np.argmax(cluster_weights)
         dominant_color_lab = centroids[dominant_cluster_idx]
+        
+        return dominant_color_lab
+
+    def estimateColorBySoftVoting(sigma: float = 10.0,
+                                max_samples: int = 5000,
+                                min_weight_threshold: float = 0.1) -> np.ndarray:
+        """
+        Método 3: Soft Voting Probabilístico (Optimizado Vectorizado)
+        Para cada pixel, calcula probabilidades de pertenencia a cada Pantone usando
+        CIEDE2000 y una función de kernel RBF. Acumula votos ponderados por la máscara
+        emplumada y selecciona el Pantone con mayor score.
+        
+        OPTIMIZACIÓN: Usa cálculo vectorizado de CIEDE2000 para todos los pixels
+        y Pantones simultáneamente, logrando una mejora de 100-1000x en velocidad.
+        
+        Args:
+            image_rgb: Imagen original en RGB (height, width, 3), dtype uint8
+            feathered_mask: Máscara emplumada en escala de grises [0, 1], dtype float32
+            pantone_db_path: Ruta al archivo JSON con la base de datos Pantone
+            sigma: Parámetro de temperatura para la función RBF (default: 10.0)
+            max_samples: Número máximo de pixels a muestrear (para eficiencia)
+            min_weight_threshold: Umbral mínimo de peso en máscara
+        
+        Returns:
+            dominant_color_lab: Color predominante en CIELAB (del Pantone ganador), dtype float32
+        """
+        # Cargar base de datos Pantone
+        self.loadPantoneDatabase()
+        
+        # Convertir a LAB en rangos estándar
+        image_lab = self.fromRGBtoLAB(self.original_image)
+        
+        # Filtrar pixels con peso significativo
+        valid_mask: bool = self.feathered_mask > min_weight_threshold
+        pixels_lab = image_lab[valid_mask]
+        weights = self.feathered_mask[valid_mask]
+        
+        # Submuestreo probabilístico si hay muchos pixels
+        if len(pixels_lab) > max_samples:
+            probabilities = weights / np.sum(weights)
+            indx = np.random.choice(len(pixels_lab), max_samples, 
+                                    replace=False, p=probabilities)
+            pixels_lab = pixels_lab[indx]
+            weights = weights[indx]
+        
+        # Extraer todos los colores LAB de Pantone en un array
+        n_pantones: int = len(self.pantone_lab_colors)
+        n_pixels: int = len(pixels_lab)
+        
+        # VECTORIZACIÓN: Calcular todas las distancias de una vez
+        # Reshape para broadcasting: pixels (n_pixels, 1, 3) vs pantones (1, n_pantones, 3)
+        pixels_reshaped = pixels_lab.reshape(n_pixels, 1, 3)
+        pantones_reshaped = self.pantone_lab_colors.reshape(1, n_pantones, 3)
+        
+        # Calcular matriz de distancias (n_pixels x n_pantones) de forma vectorizada
+        # deltaE_ciede2000 espera imágenes, así que agregamos dimensión espacial dummy
+        pixels_broadcast = np.repeat(pixels_reshaped[:, np.newaxis, :, :], n_pantones, axis=1)
+        pantones_broadcast = np.repeat(pantones_reshaped[np.newaxis, :, :, :], n_pixels, axis=0)
+        
+        # Calcular distancias vectorizadas (shape: n_pixels x n_pantones)
+        distances = deltaE_ciede2000(pixels_broadcast, pantones_broadcast).squeeze()
+        
+        # Convertir distancias a probabilidades usando RBF kernel
+        # Aplicar sobre toda la matriz de distancias
+        probabilities = np.exp(-distances**2 / (2 * sigma**2))
+        
+        # Normalizar probabilidades por fila (cada pixel suma 1.0)
+        probabilities = probabilities / probabilities.sum(axis=1, keepdims=True)
+        
+        # Acumular scores ponderados por peso espacial
+        # weights shape: (n_pixels,) -> reshape a (n_pixels, 1) para broadcasting
+        weighted_probs = probabilities * weights.reshape(-1, 1)
+        scores = weighted_probs.sum(axis=0)  # Sumar sobre pixels
+        
+        # Seleccionar Pantone con mayor score
+        winner_idx = np.argmax(scores)
+        dominant_color_lab = np.array(pantone_db[winner_idx]['lab'], dtype=np.float32)
         
         return dominant_color_lab
     
@@ -611,7 +702,7 @@ class Viewer(QGraphicsView):
         self.viewport().setCursor(Qt.ArrowCursor)
     
     def mousePressEvent(self, event) -> None:
-        # Solo nos interesa el clic izquierdo para iniciar la lógica
+        # Solo nos interesa el clic izquierdo p ara iniciar la lógica
         if event.button() == Qt.LeftButton and self.pixmap_item:
             self.click_pos = event.position()
             self.is_panning = False
@@ -683,6 +774,678 @@ class Viewer(QGraphicsView):
 
         return imgQPixmap
 
+
+class ConfigManager:
+    """Gestor de configuración con soporte para JSON"""
+    
+    def __init__(self) -> None:
+        self.default_config_path = "resources/config/default_config.json"
+        self.user_config_path = "resources/config/user_config.json"
+        self.style_path = "resources/config/dark_theme.qss"
+        self.config = None
+        self.style = None
+
+        # Cargar configuración
+        self.loadConfig()
+        self.loadStyle()
+    
+    def loadConfig(self):
+        """Carga la configuración (usuario si existe, sino default)"""
+        # Intentar cargar configuración de usuario primero
+        if os.path.exists(self.user_config_path):
+            try:
+                with open(self.user_config_path, 'r', encoding='utf-8') as f:
+                    self.config = json.load(f)
+                print("Configuración de usuario cargada")
+                return
+            except Exception as e:
+                print(f"Error al cargar configuración de usuario: {e}")
+        
+        # Si no existe o falla, cargar configuración por defecto
+        self.loadDefaultConfig()
+    
+    def loadDefaultConfig(self) -> None:
+        """Carga la configuración por defecto"""
+        with open(self.default_config_path, 'r', encoding='utf-8') as f:
+            self.config = json.load(f)
+    
+    def saveUserConfig(self, config_dict):
+        """Guarda la configuración del usuario"""
+        self.config = config_dict
+        with open(self.user_config_path, 'w', encoding='utf-8') as f:
+            json.dump(config_dict, f, indent=4, ensure_ascii=False)
+        print(f"Configuración guardada en {self.user_config_path}")
+    
+    def getConfig(self):
+        """Retorna la configuración actual"""
+        return self.config
+    
+    def getValue(self, category, key):
+        """Obtiene un valor específico de la configuración"""
+        return self.config.get(category, {}).get(key)
+    
+    def resetToDefault(self):
+        """Resetea a la configuración por defecto y la guarda"""
+        self.loadDefaultConfig()
+        # Eliminar configuración de usuario
+        if os.path.exists(self.user_config_path):
+            os.remove(self.user_config_path)
+        print("Configuración reseteada a valores por defecto")
+    
+    def loadStyle(self):
+        """Carga el archivo de estilos"""
+        try:
+            with open(self.style_path, 'r', encoding='utf-8') as f:
+                self.style = f.read()
+        except Exception as e:
+            print(f"Error al cargar estilos: {e}")
+    
+    def getStyle(self):
+        """Retorna el estilo cargado"""
+        return self.style
+
+
+class ConfigDialog(QDialog):
+    """Ventana de configuración con pestañas para diferentes parámetros"""
+    
+    def __init__(self, parent=None, config_manager=None):
+        super().__init__(parent)
+        self.config_manager = config_manager
+        
+        # Configuración de la ventana
+        self.setWindowTitle("Configuración")
+        self.setMinimumSize(500, 400)
+
+        flags = self.windowFlags()
+
+        self.setWindowFlags(
+            Qt.Dialog |                    # Es un diálogo
+            Qt.WindowCloseButtonHint |     # Botón de cerrar visible
+            Qt.WindowTitleHint |           # Barra de título visible
+            Qt.WindowSystemMenuHint        # Menú del sistema visible
+        )
+
+        self.setModal(True)  # Hace que sea modal (bloquea la ventana principal)
+
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        
+        # Layout principal
+        main_layout = QVBoxLayout()
+        
+        # Crear el widget de pestañas
+        self.tab_widget = QTabWidget()
+        
+        # Crear las diferentes pestañas
+        self.tab_widget.addTab(self.createCameraTab(), "Camera")
+        self.tab_widget.addTab(self.createCalibrationTab(), "Calibration")
+        self.tab_widget.addTab(self.createSegmentationTab(), "Segmentation")
+        self.tab_widget.addTab(self.createColorTab(), "Color")
+        self.tab_widget.addTab(self.createExportTab(), "Export")
+        
+        main_layout.addWidget(self.tab_widget)
+        
+        # Botones de acción
+        button_layout = self.createButtonLayout()
+        main_layout.addLayout(button_layout)
+        
+        self.setLayout(main_layout)
+        
+        # Cargar valores desde el config manager
+        if self.config_manager:
+            self.loadConfigValues()
+    
+    def closeEvent(self, event):
+        """Maneja el evento de cierre de la ventana"""
+        # Permitir cerrar la ventana siempre
+        event.accept()
+    
+    def keyPressEvent(self, event):
+        """Maneja eventos de teclado"""
+        # Permitir cerrar con ESC
+        if event.key() == Qt.Key_Escape:
+            self.reject()
+        else:
+            super().keyPressEvent(event)
+    
+    def reject(self):
+        """Sobrescribe reject para asegurar que el diálogo se cierre"""
+        try:
+            super().reject()
+        except Exception as e:
+            print(f"Error al cerrar diálogo: {e}")
+        finally:
+            self.close()
+    
+    def accept(self):
+        """Sobrescribe accept para asegurar que el diálogo se cierre"""
+        try:
+            super().accept()
+        except Exception as e:
+            print(f"Error al aceptar diálogo: {e}")
+        finally:
+            self.close()
+    
+    # ==================== TAB 1: CAMERA ====================
+    def createCameraTab(self):
+        """Pestaña para configurar parámetros de la cámara"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Group Box sin título
+        camera_group = QGroupBox()
+        camera_layout = QFormLayout()
+        
+        # Auto gain (CheckBox)
+        self.check_auto_gain = QCheckBox()
+        self.check_auto_gain.setChecked(True)
+        camera_layout.addRow("Auto gain:", self.check_auto_gain)
+        
+        # Preset gain (ComboBox)
+        self.combo_preset_gain = QComboBox()
+        self.combo_preset_gain.addItems(["Low", "Medium", "High"])
+        camera_layout.addRow("Preset gain:", self.combo_preset_gain)
+        
+        # Exposition time (SpinBox en microsegundos)
+        self.spin_exposition_time = QSpinBox()
+        self.spin_exposition_time.setRange(100, 1000000)  # 100µs a 1s
+        self.spin_exposition_time.setValue(10000)
+        self.spin_exposition_time.setSuffix(" µs")
+        self.spin_exposition_time.setSingleStep(1000)
+        camera_layout.addRow("Exposition time:", self.spin_exposition_time)
+        
+        camera_group.setLayout(camera_layout)
+        layout.addWidget(camera_group)
+        layout.addStretch()
+        
+        tab.setLayout(layout)
+        return tab
+    
+    # ==================== TAB 2: CALIBRATION ====================
+    def createCalibrationTab(self):
+        """Pestaña para configurar parámetros de calibración"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Group Box sin título
+        calibration_group = QGroupBox()
+        calibration_layout = QVBoxLayout()
+        calibration_layout.setSpacing(15)
+        
+        # Color Checker image path
+        checker_layout = QHBoxLayout()
+        btn_color_checker = QPushButton("Seleccionar Color Checker")
+        btn_color_checker.clicked.connect(self.selectColorCheckerPath)
+        self.label_color_checker_path = QLabel("No seleccionado")
+        self.label_color_checker_path.setWordWrap(True)
+        self.label_color_checker_path.setStyleSheet("font-size: 11px; color: #a0a0a0;")
+        checker_layout.addWidget(btn_color_checker)
+        checker_layout.addWidget(self.label_color_checker_path, 1)
+        
+        calibration_layout.addWidget(QLabel("Color Checker image path:"))
+        calibration_layout.addLayout(checker_layout)
+        
+        # Calibration params file path
+        params_layout = QHBoxLayout()
+        btn_calib_params = QPushButton("Seleccionar Parámetros")
+        btn_calib_params.clicked.connect(self.selectCalibParamsPath)
+        self.label_calib_params_path = QLabel("No seleccionado")
+        self.label_calib_params_path.setWordWrap(True)
+        self.label_calib_params_path.setStyleSheet("font-size: 11px; color: #a0a0a0;")
+        params_layout.addWidget(btn_calib_params)
+        params_layout.addWidget(self.label_calib_params_path, 1)
+        
+        calibration_layout.addWidget(QLabel("Calibration params file path:"))
+        calibration_layout.addLayout(params_layout)
+        
+        calibration_group.setLayout(calibration_layout)
+        layout.addWidget(calibration_group)
+        layout.addStretch()
+        
+        tab.setLayout(layout)
+        return tab
+    
+    def selectColorCheckerPath(self):
+        """Abre diálogo para seleccionar imagen de Color Checker"""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleccionar Color Checker",
+            "resources/calibration",
+            "Imágenes (*.png *.jpg *.jpeg *.bmp)"
+        )
+        if path:
+            self.label_color_checker_path.setText(path)
+    
+    def selectCalibParamsPath(self):
+        """Abre diálogo para seleccionar archivo de parámetros"""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleccionar Parámetros de Calibración",
+            "resources/calibration",
+            "Pickle Files (*.pickle *.pkl);;Todos los archivos (*.*)"
+        )
+        if path:
+            self.label_calib_params_path.setText(path)
+    
+    # ==================== TAB 3: SEGMENTATION ====================
+    def createSegmentationTab(self):
+        """Pestaña para configurar parámetros de segmentación"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Group Box "Scene"
+        scene_group = QGroupBox("Scene")
+        scene_layout = QFormLayout()
+        
+        # Image scale size
+        self.spin_image_scale = QSpinBox()
+        self.spin_image_scale.setRange(256, 1920)
+        self.spin_image_scale.setValue(720)
+        self.spin_image_scale.setSingleStep(64)
+        self.spin_image_scale.setSuffix(" px")
+        scene_layout.addRow("Image scale size:", self.spin_image_scale)
+        
+        # Marker radius
+        self.spin_marker_radius = QSpinBox()
+        self.spin_marker_radius.setRange(1, 20)
+        self.spin_marker_radius.setValue(1)
+        self.spin_marker_radius.setSuffix(" px")
+        scene_layout.addRow("Marker radius:", self.spin_marker_radius)
+        
+        scene_group.setLayout(scene_layout)
+        layout.addWidget(scene_group)
+        
+        # Group Box "Mask"
+        mask_group = QGroupBox("Mask")
+        mask_layout = QFormLayout()
+        
+        # Mask color (Frame + Button)
+        mask_color_layout = QHBoxLayout()
+        self.frame_mask_color = QFrame()
+        self.frame_mask_color.setFixedSize(60, 30)
+        self.frame_mask_color.setFrameStyle(QFrame.Box)
+        self.frame_mask_color.setStyleSheet("background-color: rgb(158, 16, 127); border: 2px solid #999;")
+        
+        btn_mask_color = QPushButton("Cambiar color")
+        btn_mask_color.clicked.connect(self.selectMaskColor)
+        
+        mask_color_layout.addWidget(self.frame_mask_color)
+        mask_color_layout.addWidget(btn_mask_color)
+        mask_color_layout.addStretch()
+        
+        mask_layout.addRow("Mask color:", mask_color_layout)
+        
+        mask_group.setLayout(mask_layout)
+        layout.addWidget(mask_group)
+        
+        # Group Box "Guided Filter"
+        filter_group = QGroupBox("Guided Filter")
+        filter_layout = QFormLayout()
+        
+        # Radius
+        self.spin_filter_radius = QSpinBox()
+        self.spin_filter_radius.setRange(1, 50)
+        self.spin_filter_radius.setValue(2)
+        self.spin_filter_radius.setSuffix(" px")
+        filter_layout.addRow("Radius:", self.spin_filter_radius)
+        
+        # Epsilon
+        self.spin_filter_epsilon = QDoubleSpinBox()
+        self.spin_filter_epsilon.setRange(0.01, 1.0)
+        self.spin_filter_epsilon.setValue(0.3)
+        self.spin_filter_epsilon.setDecimals(2)
+        self.spin_filter_epsilon.setSingleStep(0.01)
+        self.spin_filter_epsilon.setSuffix("²")
+        filter_layout.addRow("Epsilon (ε²):", self.spin_filter_epsilon)
+        
+        filter_group.setLayout(filter_layout)
+        layout.addWidget(filter_group)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        return tab
+    
+    def selectMaskColor(self):
+        """Abre diálogo para seleccionar color de máscara"""
+        # Obtener color actual del frame
+        current_style = self.frame_mask_color.styleSheet()
+        # Extraer RGB del estilo (formato: "background-color: rgb(r, g, b);")
+        import re
+        match = re.search(r'rgb\((\d+),\s*(\d+),\s*(\d+)\)', current_style)
+        if match:
+            r, g, b = int(match.group(1)), int(match.group(2)), int(match.group(3))
+            current_color = QColor(r, g, b)
+        else:
+            current_color = QColor(158, 16, 127)
+        
+        # Abrir diálogo de color
+        new_color = QColorDialog.getColor(current_color, self, "Seleccionar color de máscara")
+        
+        if new_color.isValid():
+            r, g, b = new_color.red(), new_color.green(), new_color.blue()
+            self.frame_mask_color.setStyleSheet(
+                f"background-color: rgb({r}, {g}, {b}); border: 2px solid #999;"
+            )
+    
+    # ==================== TAB 4: COLOR ====================
+    def createColorTab(self):
+        """Pestaña para configurar parámetros de color"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Group Box "Pantone"
+        pantone_group = QGroupBox("Pantone")
+        pantone_layout = QVBoxLayout()
+        pantone_layout.setSpacing(10)
+        
+        # Pantone Database File
+        pantone_file_layout = QHBoxLayout()
+        btn_pantone_file = QPushButton("Seleccionar Database")
+        btn_pantone_file.clicked.connect(self.selectPantoneDatabase)
+        self.label_pantone_path = QLabel("No seleccionado")
+        self.label_pantone_path.setWordWrap(True)
+        self.label_pantone_path.setStyleSheet("font-size: 11px; color: #a0a0a0;")
+        pantone_file_layout.addWidget(btn_pantone_file)
+        pantone_file_layout.addWidget(self.label_pantone_path, 1)
+        
+        pantone_layout.addWidget(QLabel("Pantone Database File:"))
+        pantone_layout.addLayout(pantone_file_layout)
+        
+        pantone_group.setLayout(pantone_layout)
+        layout.addWidget(pantone_group)
+        
+        # Group Box "Color Method"
+        method_group = QGroupBox("Color Method")
+        method_layout = QVBoxLayout()
+        
+        # Select method (ComboBox)
+        method_select_layout = QFormLayout()
+        self.combo_color_method = QComboBox()
+        self.combo_color_method.addItems(["Median", "KMeans", "SoftVoting"])
+        self.combo_color_method.currentTextChanged.connect(self.onColorMethodChanged)
+        method_select_layout.addRow("Select method:", self.combo_color_method)
+        method_layout.addLayout(method_select_layout)
+        
+        # Contenedor para parámetros condicionales
+        self.method_params_layout = QFormLayout()
+        
+        # Parámetros para Median
+        self.label_threshold_median = QLabel("Threshold Median:")
+        self.spin_threshold_median = QDoubleSpinBox()
+        self.spin_threshold_median.setRange(0.0, 1.0)
+        self.spin_threshold_median.setValue(0.0)
+        self.spin_threshold_median.setDecimals(2)
+        self.spin_threshold_median.setSingleStep(0.05)
+        self.method_params_layout.addRow(self.label_threshold_median, self.spin_threshold_median)
+        
+        # Parámetros para KMeans
+        self.label_threshold_kmeans = QLabel("Threshold KMeans:")
+        self.spin_threshold_kmeans = QDoubleSpinBox()
+        self.spin_threshold_kmeans.setRange(0.0, 1.0)
+        self.spin_threshold_kmeans.setValue(0.3)
+        self.spin_threshold_kmeans.setDecimals(2)
+        self.spin_threshold_kmeans.setSingleStep(0.05)
+        self.method_params_layout.addRow(self.label_threshold_kmeans, self.spin_threshold_kmeans)
+        
+        self.label_number_clusters = QLabel("Number Clusters:")
+        self.spin_number_clusters = QSpinBox()
+        self.spin_number_clusters.setRange(2, 10)
+        self.spin_number_clusters.setValue(3)
+        self.method_params_layout.addRow(self.label_number_clusters, self.spin_number_clusters)
+        
+        # Parámetros para SoftVoting
+        self.label_threshold_softvoting = QLabel("Threshold SoftVoting:")
+        self.spin_threshold_softvoting = QDoubleSpinBox()
+        self.spin_threshold_softvoting.setRange(0.0, 1.0)
+        self.spin_threshold_softvoting.setValue(0.1)
+        self.spin_threshold_softvoting.setDecimals(2)
+        self.spin_threshold_softvoting.setSingleStep(0.05)
+        self.method_params_layout.addRow(self.label_threshold_softvoting, self.spin_threshold_softvoting)
+        
+        self.label_sigma = QLabel("Sigma:")
+        self.spin_sigma = QDoubleSpinBox()
+        self.spin_sigma.setRange(1.0, 100.0)
+        self.spin_sigma.setValue(10.0)
+        self.spin_sigma.setDecimals(1)
+        self.spin_sigma.setSingleStep(1.0)
+        self.method_params_layout.addRow(self.label_sigma, self.spin_sigma)
+        
+        self.label_max_samples = QLabel("Max Samples:")
+        self.spin_max_samples = QSpinBox()
+        self.spin_max_samples.setRange(100, 50000)
+        self.spin_max_samples.setValue(5000)
+        self.spin_max_samples.setSingleStep(500)
+        self.method_params_layout.addRow(self.label_max_samples, self.spin_max_samples)
+        
+        method_layout.addLayout(self.method_params_layout)
+        method_group.setLayout(method_layout)
+        layout.addWidget(method_group)
+        
+        layout.addStretch()
+        tab.setLayout(layout)
+        
+        # Mostrar solo los parámetros del método por defecto
+        self.onColorMethodChanged("Median")
+        
+        return tab
+    
+    def selectPantoneDatabase(self):
+        """Abre diálogo para seleccionar base de datos Pantone"""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Seleccionar Base de Datos Pantone",
+            "resources/pantone_databases",
+            "JSON Files (*.json);;Todos los archivos (*.*)"
+        )
+        if path:
+            self.label_pantone_path.setText(path)
+    
+    def onColorMethodChanged(self, method):
+        """Muestra/oculta parámetros según el método seleccionado"""
+        # Ocultar todos los parámetros primero
+        self.label_threshold_median.hide()
+        self.spin_threshold_median.hide()
+        self.label_threshold_kmeans.hide()
+        self.spin_threshold_kmeans.hide()
+        self.label_number_clusters.hide()
+        self.spin_number_clusters.hide()
+        self.label_threshold_softvoting.hide()
+        self.spin_threshold_softvoting.hide()
+        self.label_sigma.hide()
+        self.spin_sigma.hide()
+        self.label_max_samples.hide()
+        self.spin_max_samples.hide()
+        
+        # Mostrar solo los parámetros del método seleccionado
+        if method == "Median":
+            self.label_threshold_median.show()
+            self.spin_threshold_median.show()
+        elif method == "KMeans":
+            self.label_threshold_kmeans.show()
+            self.spin_threshold_kmeans.show()
+            self.label_number_clusters.show()
+            self.spin_number_clusters.show()
+        elif method == "SoftVoting":
+            self.label_threshold_softvoting.show()
+            self.spin_threshold_softvoting.show()
+            self.label_sigma.show()
+            self.spin_sigma.show()
+            self.label_max_samples.show()
+            self.spin_max_samples.show()
+    
+    # ==================== TAB 5: EXPORT ====================
+    def createExportTab(self):
+        """Pestaña para configurar parámetros de exportación"""
+        tab = QWidget()
+        layout = QVBoxLayout()
+        
+        # Group Box sin título
+        export_group = QGroupBox()
+        export_layout = QFormLayout()
+        
+        # Resolution DPI
+        self.spin_export_dpi = QSpinBox()
+        self.spin_export_dpi.setRange(72, 600)
+        self.spin_export_dpi.setValue(300)
+        self.spin_export_dpi.setSingleStep(50)
+        self.spin_export_dpi.setSuffix(" dpi")
+        export_layout.addRow("Resolution DPI:", self.spin_export_dpi)
+        
+        export_group.setLayout(export_layout)
+        layout.addWidget(export_group)
+        layout.addStretch()
+        
+        tab.setLayout(layout)
+        return tab
+    
+    # ==================== BUTTONS ====================
+    def createButtonLayout(self):
+        """Crea los botones de Aceptar y Cancelar"""
+        button_layout = QHBoxLayout()
+
+        # Botón Restaurar por defecto (a la izquierda)
+        btn_restore = QPushButton("Restaurar")
+        btn_restore.clicked.connect(self.restoreDefaults)
+        button_layout.addWidget(btn_restore)
+
+        button_layout.addStretch()
+        
+        # Botón Cancelar
+        btn_cancel = QPushButton("Cancelar")
+        btn_cancel.clicked.connect(self.reject)
+        button_layout.addWidget(btn_cancel)
+        
+        # Botón Aceptar
+        btn_accept = QPushButton("Aceptar")
+        btn_accept.clicked.connect(self.accept)
+        #btn_accept.setDefault(True)
+        button_layout.addWidget(btn_accept)
+        
+        return button_layout
+    
+    # ==================== LOAD/SAVE CONFIG ====================
+    def loadConfigValues(self):
+        """Carga los valores desde el config manager"""
+        if not self.config_manager:
+            return
+        
+        config = self.config_manager.getConfig()
+        
+        # Camera
+        self.check_auto_gain.setChecked(config['camera']['auto_gain'])
+        self.combo_preset_gain.setCurrentText(config['camera']['preset_gain'])
+        self.spin_exposition_time.setValue(config['camera']['exposition_time'])
+        
+        # Calibration
+        self.label_color_checker_path.setText(config['calibration']['color_checker_path'])
+        self.label_calib_params_path.setText(config['calibration']['calibration_params_path'])
+        
+        # Segmentation
+        self.spin_image_scale.setValue(config['segmentation']['scene']['image_scale_size'])
+        self.spin_marker_radius.setValue(config['segmentation']['scene']['marker_radius'])
+        
+        mask_color = config['segmentation']['mask']['mask_color']
+        self.frame_mask_color.setStyleSheet(
+            f"background-color: rgb({mask_color[0]}, {mask_color[1]}, {mask_color[2]}); border: 2px solid #999;"
+        )
+        
+        self.spin_filter_radius.setValue(config['segmentation']['guided_filter']['radius'])
+        self.spin_filter_epsilon.setValue(config['segmentation']['guided_filter']['epsilon'])
+        
+        # Color
+        self.label_pantone_path.setText(config['color']['pantone']['database_file'])
+        self.combo_color_method.setCurrentText(config['color']['method']['selected_method'])
+        self.spin_threshold_median.setValue(config['color']['method']['threshold_median'])
+        self.spin_threshold_kmeans.setValue(config['color']['method']['threshold_kmeans'])
+        self.spin_number_clusters.setValue(config['color']['method']['number_clusters'])
+        self.spin_threshold_softvoting.setValue(config['color']['method']['threshold_softvoting'])
+        self.spin_sigma.setValue(config['color']['method']['sigma'])
+        self.spin_max_samples.setValue(config['color']['method']['max_samples'])
+        
+        # Export
+        self.spin_export_dpi.setValue(config['export']['dpi'])
+    
+    def restoreDefaults(self):
+        """Restaura los valores por defecto"""
+        reply = QMessageBox.question(
+            self,
+            "Restaurar configuración por defecto",
+            "¿Estás seguro de que deseas restaurar la configuración por defecto?\n"
+            "Se perderán todos los cambios personalizados.",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+        
+        if reply == QMessageBox.Yes:
+            if self.config_manager:
+                self.config_manager.resetToDefault()
+                self.loadConfigValues()
+                QMessageBox.information(
+                    self,
+                    "Configuración restaurada",
+                    "La configuración ha sido restaurada a los valores por defecto."
+                )
+    
+    def getValues(self):
+        """Retorna un diccionario con todos los valores configurados"""
+        # Extraer RGB del color de máscara
+        import re
+        mask_style = self.frame_mask_color.styleSheet()
+        match = re.search(r'rgb\((\d+),\s*(\d+),\s*(\d+)\)', mask_style)
+        if match:
+            mask_color = [int(match.group(1)), int(match.group(2)), int(match.group(3))]
+        else:
+            mask_color = [158, 16, 127]
+
+        dict_values = {
+            'camera': {
+                'auto_gain': self.check_auto_gain.isChecked(),
+                'preset_gain': self.combo_preset_gain.currentText(),
+                'exposition_time': self.spin_exposition_time.value(),
+                'description': 'Parámetros de la cámara'
+            },
+            'calibration': {
+                'color_checker_path': self.label_color_checker_path.text(),
+                'calibration_params_path': self.label_calib_params_path.text(),
+                'description': 'Rutas de calibración'
+            },
+            'segmentation': {
+                'scene': {
+                    'image_scale_size': self.spin_image_scale.value(),
+                    'marker_radius': self.spin_marker_radius.value()
+                },
+                'mask': {
+                    'mask_color': mask_color
+                },
+                'guided_filter': {
+                    'radius': self.spin_filter_radius.value(),
+                    'epsilon': self.spin_filter_epsilon.value()
+                },
+                'description': 'Parámetros de segmentación'
+            },
+            'color': {
+                'pantone': {
+                    'database_file': self.label_pantone_path.text()
+                },
+                'method': {
+                    'selected_method': self.combo_color_method.currentText(),
+                    'threshold_median': self.spin_threshold_median.value(),
+                    'threshold_kmeans': self.spin_threshold_kmeans.value(),
+                    'number_clusters': self.spin_number_clusters.value(),
+                    'threshold_softvoting': self.spin_threshold_softvoting.value(),
+                    'sigma': self.spin_sigma.value(),
+                    'max_samples': self.spin_max_samples.value()
+                },
+                'description': 'Parámetros de estimación de color'
+            },
+            'export': {
+                'dpi': self.spin_export_dpi.value(),
+                'description': 'Parámetros de exportación'
+            }
+        }
+        
+        return dict_values
+
+
 class MainWindow(QMainWindow):
     # Initialization
     def __init__(self) -> None:
@@ -691,9 +1454,13 @@ class MainWindow(QMainWindow):
         FONT_FAMILY = 'Sans Serif'
         
         self.source_img_path = None
-        self.processing = None
         self.doc = None
+
         self.calibration = Calibration()
+        self.processing = ImageProcessing()
+
+        # NUEVO: Inicializar el gestor de configuración
+        self.config_manager = ConfigManager()
 
         # Window Settings
         self.setWindowTitle("SACISMC")
@@ -715,6 +1482,7 @@ class MainWindow(QMainWindow):
         menu_file = menu_bar.addMenu("Archivo")
         action_open_img = menu_file.addAction("Abrir imagen")
         action_open_img.triggered.connect(self.openImage)
+
         submenu_extract = menu_file.addMenu("Exportar")
         action_extract_img = submenu_extract.addAction("Imagen original")
         action_extract_img.triggered.connect(self.saveImage)
@@ -723,13 +1491,15 @@ class MainWindow(QMainWindow):
         action_extract_histogram = submenu_extract.addAction("Histograma de color")
         action_extract_histogram.triggered.connect(self.exportHistogram)
 
+        action_settings = menu_file.addAction("Configuración")
+        action_settings.triggered.connect(self.openSettingsDialog)
+        #menu_file.addSeparator()
 
         menu_edit = menu_bar.addMenu("Editar")
         #menu_edit.setFont(self.menus_font)
         action_mask_color = menu_edit.addAction("Cambiar color máscara")
         action_mask_color.triggered.connect(self.openColorDialog)
         submenu_delete = menu_edit.addMenu("Eliminar")
-        action_mask_color.triggered.connect(self.openColorDialog)
         action_delete_last_point = submenu_delete.addAction("Último punto")
         action_delete_last_point.triggered.connect(self.viewer.clearLastPoint)
         action_delete_all_points = submenu_delete.addAction("Todos los puntos")
@@ -758,108 +1528,74 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(main_container)
 
         # Styles
-        styles = """
-        QMainWindow {
-            background-color: #2d2d2d;
-        }
-        QMenuBar {
-            background-color: #2d2d2d;
-            color: #e0e0e0;
-            font-size: 14px;
-            spacing: 0px;
-            padding: 0px;
-            margin: 10px 10px 10px 10px;
-            border-bottom: 1px solid #707070;
-        }
-        QMenuBar::item {
-            padding: 5px 8px 5px 8px;
-            margin: 0px;
-        }
-        QMenuBar::item:selected {
-            background: #424242;
-            border-top-left-radius: 5px;
-            border-top-right-radius: 5px;
-        }
-        QMenu {
-            font-size: 14px;
-            background-color: #464646;
-            color: #e0e0e0;
-            padding: 6px 0px;
-        }
-        QMenu::item {
-            padding: 4px 8px 5px 24px;
-            margin: 0px 6px;
-        }
-        QMenu::item:selected {
-            background-color: #308cc6;
-            color: white;
-            border-radius: 10px;
-        }
-        QPushButton{
-            font-weight: bold;
-            font-size: 14px;
-            padding: 5px;
-            margin: 0px;
-            border: 1px solid #707070;
-            border-radius: 7px;
-            background-color: #424242;
-            color: #e0e0e0;
-        }
-        QPushButton:hover {
-            background-color: #313131;
-            border: 0px solid #707070;
-        }
-        QGraphicsView {
-            background-color: #313131;
-            border: 0px solid #bdbdbd;
-        }
-        QGroupBox {
-            font-weight: bold;
-            border: 1px solid #707070;
-            border-radius: 7px;
-            margin-top: 1ex;
-            padding-top: 5px;
-        }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 3px;
-            color: #e0e0e0;
-        }
-        QLabel {
-            color: #e0e0e0;
-            font-size: 13px;
-            font-weight: normal;
-        }
-        QCheckBox {
-            color: #e0e0e0;
-        }
-        QCheckBox::indicator {
-            width: 14px;
-            height: 14px;
-            border: 1px solid #e0e0e0;
-            border-radius: 3px;
-            background-color: #e0e0e0;/*606060*/
-        }
-        QCheckBox::indicator:checked {
-            width: 14px;
-            height: 14px;
-            border: 1px solid #e0e0e0;
-            border-radius: 3px;
-            background-color: #2b2b2b;
-        }
-        QDialog {
-            background-color: #373737;
-        }
-        """
-        # Aplica la hoja de estilos a toda la ventana
-        self.setStyleSheet(styles)
+        self.setStyleSheet(self.config_manager.getStyle())
+
+        # Initial config
+        #self.applyInitialConfig()
+        self.applyConfigToComponents(self.config_manager.getConfig())
 
     # Methods
+    def applyInitialConfig(self):
+        """Aplica la configuración inicial a los componentes que lo necesitan"""
+        config = self.config_manager.getConfig()
+        
+        # Aplicar configuración de visualización
+        self.viewer.min_markpoint_radius = config['segmentation']['scene']['marker_radius']
+        
+        # Cargar rutas de calibración
+        self.calibration.color_checker_img_path = config['calibration']['color_checker_path']
+        self.calibration.params_path = config['calibration']['calibration_params_path']
+
+    def openSettingsDialog(self) -> None:
+        """Abre el diálogo de configuración"""
+        dialog = ConfigDialog(self, self.config_manager)
+        
+        # Aplicar el mismo estilo que la ventana principal
+        dialog.setStyleSheet(self.config_manager.getStyle())
+        
+        # Mostrar el diálogo y procesar resultado
+        if dialog.exec() == QDialog.Accepted:
+            # Obtener los valores configurados
+            values = dialog.getValues()
+
+            self.config_manager.saveUserConfig(values)
+            
+            # Aplicar los valores al processing si existe
+            self.applyConfigToComponents(values)
+                
+            # Mostrar mensaje de confirmación
+            QMessageBox.information(
+                self, 
+                "Configuración aplicada",
+                "Los parámetros se han guardado y aplicado correctamente."
+            )
+
+    def applyConfigToComponents(self, config):
+        """Aplica la configuración a todos los componentes de la aplicación"""
+        # Aplicar a Calibration
+        self.calibration.color_checker_img_path = config['calibration']['color_checker_path']
+        self.calibration.params_path = config['calibration']['calibration_params_path']
+        
+        # Aplicar a Viewer
+        self.viewer.min_markpoint_radius = config['segmentation']['scene']['marker_radius']
+        
+        # Aplicar a Processing si existe
+        if self.processing:
+            self.processing.scaled_image_size = config['segmentation']['scene']['image_scale_size']
+            self.processing.r_filter = config['segmentation']['guided_filter']['radius']
+            self.processing.eps_filter = config['segmentation']['guided_filter']['epsilon']**2
+            self.processing.setFeatheredMaskColor(config['segmentation']['mask']['mask_color'])
+            self.processing.pantone_database_path = config['color']['pantone']['database_file']
+            
+            # Actualizar tamaño de escala (requiere reiniciar processing con nueva imagen)
+            # Este parámetro se aplicará en la próxima carga de imagen
+        
+        print("Configuración aplicada a todos los componentes")
+
     def createSidePanel(self) -> QWidget:
         """Crea el panel lateral con controles"""
         panel = QWidget()
-        panel.setFixedWidth(300)
+        panel.setFixedWidth(400)
         
         layout = QVBoxLayout()
         layout.setAlignment(Qt.AlignTop)
@@ -898,57 +1634,63 @@ class MainWindow(QMainWindow):
         group_others_layout.setContentsMargins(0, 0, 0, 0) 
         group_others_layout.setSpacing(10)
 
-        group_box_1 = QGroupBox("Color")
+        # -------------------- DISPLAY --------------------
+
+        group_box_1 = QGroupBox("Visualización")
         group_layout_1 = QVBoxLayout()
         group_layout_1.setContentsMargins(13, 15, 13, 10) 
-        group_layout_1.setSpacing(8)
-        
-        # Widget de color
-        self.color_pantone = QLabel("PANTONE")
-        self.color_pantone.setStyleSheet("font-weight: bold;")
-        group_layout_1.addWidget(self.color_pantone)
-
-        self.color_lab = QLabel("LAB")
-        #self.color_lab.setStyleSheet("font-weight: normal;")
-        group_layout_1.addWidget(self.color_lab)
-
-        self.color_delta = QLabel("DELTA E")
-        #self.color_delta.setStyleSheet("font-weight: normal;")
-        group_layout_1.addWidget(self.color_delta)
-        
-        self.color_display = QFrame()
-        self.color_display.setFixedHeight(80)
-        self.color_display.setFrameStyle(QFrame.Box)
-        #self.color_display.setStyleSheet("background-color: rgb(128, 128, 128); border: none;")
-        group_layout_1.addWidget(self.color_display)
-        
-        # Label con valores RGB
-        self.rgb_label = QLabel("Representación RGB")
-        self.rgb_label.setStyleSheet("font-size: 11px;")
-        self.rgb_label.setAlignment(Qt.AlignCenter)
-        group_layout_1.addWidget(self.rgb_label)
-        
-        group_box_1.setLayout(group_layout_1)
-        group_others_layout.addWidget(group_box_1)
-
-        group_box_2 = QGroupBox("Visualización")
-        group_layout_2 = QVBoxLayout()
-        group_layout_2.setContentsMargins(13, 15, 13, 10) 
-        group_layout_2.setSpacing(7)
+        group_layout_1.setSpacing(7)
         
         # Checkbox
         self.checkbox_hide_mask = QCheckBox("Ocultar máscara")
         self.checkbox_hide_mask.setChecked(False)
         self.checkbox_hide_mask.stateChanged.connect(self.hideMask)
-        group_layout_2.addWidget(self.checkbox_hide_mask)
+        group_layout_1.addWidget(self.checkbox_hide_mask)
 
         self.checkbox_hide_points = QCheckBox("Ocultar puntos")
         self.checkbox_hide_points.setChecked(False)
         self.checkbox_hide_points.stateChanged.connect(self.hidePoints)
-        group_layout_2.addWidget(self.checkbox_hide_points)
+        group_layout_1.addWidget(self.checkbox_hide_points)
 
+        group_box_1.setLayout(group_layout_1)
+        group_others_layout.addWidget(group_box_1)
+
+        # -------------------- COLOR --------------------
+
+        group_box_2 = QGroupBox("Color")
+        group_layout_2 = QVBoxLayout()
+        group_layout_2.setContentsMargins(13, 15, 13, 10) 
+        group_layout_2.setSpacing(8)
+        
+        # Widget de color
+        self.color_pantone = QLabel("PANTONE")
+        self.color_pantone.setStyleSheet("font-weight: bold;")
+        group_layout_2.addWidget(self.color_pantone)
+
+        self.color_lab = QLabel("LAB")
+        self.color_lab.setStyleSheet("font-weight: normal;")
+        group_layout_2.addWidget(self.color_lab)
+
+        self.color_delta = QLabel("DELTA E")
+        #self.color_delta.setStyleSheet("font-weight: normal;")
+        group_layout_2.addWidget(self.color_delta)
+        
+        self.color_display = QFrame()
+        self.color_display.setFixedHeight(80)
+        self.color_display.setFrameStyle(QFrame.Box)
+        #self.color_display.setStyleSheet("background-color: rgb(128, 128, 128); border: none;")
+        group_layout_2.addWidget(self.color_display)
+        
+        # Label con valores RGB
+        self.rgb_label = QLabel("Representación RGB")
+        self.rgb_label.setStyleSheet("font-size: 11px;")
+        self.rgb_label.setAlignment(Qt.AlignCenter)
+        group_layout_2.addWidget(self.rgb_label)
+        
         group_box_2.setLayout(group_layout_2)
         group_others_layout.addWidget(group_box_2)
+
+        # -------------------- REGISTER --------------------
 
         group_box_3 = QGroupBox("Registro")
         group_layout_3 = QVBoxLayout()
@@ -993,19 +1735,22 @@ class MainWindow(QMainWindow):
         else:
             self.viewer.showAllPoints(True)
     
-    def updateColorDisplay(self, color_rgb: dict) -> None:
+    def updateColorDisplay(self, colors: dict) -> None:
         """Actualiza el widget de visualización de color"""
-        if color_rgb is not None:
-            r = color_rgb["Pantone RGB"][0]
-            g = color_rgb["Pantone RGB"][1]
-            b = color_rgb["Pantone RGB"][2]
+        if colors is not None:
+            r = colors["Color 1"]["RGB"][0]
+            g = colors["Color 1"]["RGB"][1]
+            b = colors["Color 1"]["RGB"][2]
             self.color_display.setStyleSheet(
                 f"background-color: rgb({r}, {g}, {b}); border: 2px solid #999;"
             )
             #self.rgb_label.setText(f"R: {r}  G: {g}  B: {b}")
-            self.color_pantone.setText(color_rgb["Pantone Name"])
-            self.color_lab.setText(f"LAB: ({color_rgb["Pantone LAB"][0]:.5f}, {color_rgb["Pantone LAB"][1]:.1f}, {color_rgb["Pantone LAB"][2]:.1f})")
-            self.color_delta.setText(f"ΔE00: {color_rgb["Delta E"]:.5f}")
+            self.color_pantone.setText(colors["Color 1"]["Pantone Name"])
+            l = colors["Color 1"]["LAB"][0]
+            a = colors["Color 1"]["LAB"][1]
+            b = colors["Color 1"]["LAB"][2]
+            self.color_lab.setText(f"LAB: ({l:.5f}, {a:.1f}, {b:.1f})")
+            self.color_delta.setText(f"ΔE00: {colors["Color 1"]["ΔE00"]:.5f}")
             self.checkbox_hide_mask.setChecked(False)
             self.checkbox_hide_points.setChecked(False)
     
@@ -1104,7 +1849,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Error", 
                             f"Error al guardar los datos: {str(e)}")
-
     
     def createCalibrationParams(self) -> None:
         color_patches = self.calibration.detectColorChecker()
@@ -1149,13 +1893,12 @@ class MainWindow(QMainWindow):
                                     "Nuevo Color Checker seleccionado", 
                                     f"Crea nuevamente los parámetros de calibración.")
 
-
     def openImage(self) -> None:
         self.source_img_path, _ = QFileDialog.getOpenFileName(
             self, "Seleccionar Imagen", "resources/test_images", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
         )
         if self.source_img_path:
-            self.processing = ImageProcessing(self.source_img_path, self.calibration)
+            self.processing.loadImage(self.source_img_path, self.calibration)
             self.viewer.clearVariables()
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.processing.getScaledImage()))            
             self.doc = None
@@ -1165,6 +1908,10 @@ class MainWindow(QMainWindow):
     def runSegmentation(self) -> None:
         if self.source_img_path:
             if self.viewer.point_coordinates:
+                # Obtener configuración de método de color
+                config = self.config_manager.getConfig()
+                color_method = config['color']['method']['selected_method']
+
                 self.processing.setInputPointArray(self.viewer.point_coordinates)
                 self.processing.setInputLabelArray(self.viewer.point_labels)
                 self.processing.setRawMask()
@@ -1177,7 +1924,18 @@ class MainWindow(QMainWindow):
                 if not self.group_box_others.isVisible():
                     self.group_box_others.show()
 
-                self.updateColorDisplay(self.processing.getColorByWeightedMedian())
+                
+                if color_method == "Median":
+                    self.processing.estimateColorsByWeightedMedian(min_weight_threshold=config['color']['method']['threshold_median'] )
+                elif color_method == "KMeans":
+                    self.processing.estimateColorByKMeans(n_clusters=config['color']['method']['number_clusters'],
+                                                        min_weight_threshold=config['color']['method']['threshold_kmeans'])
+                elif color_method == "SoftVoting":
+                    self.processing.estimateColorBySoftVoting(sigma=config['color']['method']['sigma'],
+                                                            max_samples=config['color']['method']['max_samples'],
+                                                            min_weight_threshold=config['color']['method']['threshold_softvoting'])
+                
+                self.updateColorDisplay(self.processing.getTopColors())
                 self.doc = Documentation()
             else:
                 QMessageBox.warning(self, 
