@@ -305,7 +305,6 @@ class ImageProcessing():
                             radius=radius,
                             eps=eps
                         )
-        print(np.max(self.feathered_mask))
         self.scaled_feathered_mask = self.decimateImage(self.feathered_mask)
 
     def getSegmentedRegionHistogram(self):
@@ -390,8 +389,8 @@ class ImageProcessing():
         
         self.findNearestPantone(dominant_color_lab)
 
-    def estimateColorByKMeans(n_clusters: int = 3,
-                            min_weight_threshold: float = 0.3) -> np.ndarray:
+    def estimateColorByKMeans(self, n_clusters: int = 3,
+                                min_weight_threshold: float = 0.3) -> np.ndarray:
         # Convertir a LAB en rangos estándar
         image_lab = self.fromRGBtoLAB(self.original_image)
         
@@ -431,9 +430,9 @@ class ImageProcessing():
         dominant_cluster_idx = np.argmax(cluster_weights)
         dominant_color_lab = centroids[dominant_cluster_idx]
         
-        return dominant_color_lab
+        self.findNearestPantone(dominant_color_lab)
 
-    def estimateColorBySoftVoting(sigma: float = 10.0,
+    def estimateColorBySoftVoting(self, sigma: float = 10.0,
                                 max_samples: int = 5000,
                                 min_weight_threshold: float = 0.1) -> np.ndarray:
         """
@@ -456,8 +455,6 @@ class ImageProcessing():
         Returns:
             dominant_color_lab: Color predominante en CIELAB (del Pantone ganador), dtype float32
         """
-        # Cargar base de datos Pantone
-        self.loadPantoneDatabase()
         
         # Convertir a LAB en rangos estándar
         image_lab = self.fromRGBtoLAB(self.original_image)
@@ -505,10 +502,14 @@ class ImageProcessing():
         scores = weighted_probs.sum(axis=0)  # Sumar sobre pixels
         
         # Seleccionar Pantone con mayor score
-        winner_idx = np.argmax(scores)
-        dominant_color_lab = np.array(pantone_db[winner_idx]['lab'], dtype=np.float32)
-        
-        return dominant_color_lab
+        #winner_idx = np.argmax(scores)
+        #dominant_color_lab = np.array(pantone_db[winner_idx]['lab'], dtype=np.float32)
+
+        # Seleccionar top 3 Pantones
+        sorted_3_indx = np.argsort(scores)[:-3]
+        for i, indx in enumerate(sorted_3_indx):
+            name = self.pantone_name_colors[indx]
+            lab = self.pantone_lab_colors[indx]
     
     @staticmethod
     def fromRGBtoLAB(image_rgb: np.ndarray) -> np.ndarray:
@@ -796,7 +797,6 @@ class ConfigManager:
             try:
                 with open(self.user_config_path, 'r', encoding='utf-8') as f:
                     self.config = json.load(f)
-                print("Configuración de usuario cargada")
                 return
             except Exception as e:
                 print(f"Error al cargar configuración de usuario: {e}")
@@ -814,7 +814,6 @@ class ConfigManager:
         self.config = config_dict
         with open(self.user_config_path, 'w', encoding='utf-8') as f:
             json.dump(config_dict, f, indent=4, ensure_ascii=False)
-        print(f"Configuración guardada en {self.user_config_path}")
     
     def getConfig(self):
         """Retorna la configuración actual"""
@@ -830,7 +829,6 @@ class ConfigManager:
         # Eliminar configuración de usuario
         if os.path.exists(self.user_config_path):
             os.remove(self.user_config_path)
-        print("Configuración reseteada a valores por defecto")
     
     def loadStyle(self):
         """Carga el archivo de estilos"""
@@ -848,9 +846,12 @@ class ConfigManager:
 class ConfigDialog(QDialog):
     """Ventana de configuración con pestañas para diferentes parámetros"""
     
-    def __init__(self, parent=None, config_manager=None):
+    def __init__(self, parent=None, config_manager=None, processing=None):
         super().__init__(parent)
         self.config_manager = config_manager
+        self.processing = processing
+
+        self.color_mask = self.processing.getFeatheredMaskColor().tolist()
         
         # Configuración de la ventana
         self.setWindowTitle("Configuración")
@@ -1106,22 +1107,16 @@ class ConfigDialog(QDialog):
     
     def selectMaskColor(self):
         """Abre diálogo para seleccionar color de máscara"""
-        # Obtener color actual del frame
-        current_style = self.frame_mask_color.styleSheet()
-        # Extraer RGB del estilo (formato: "background-color: rgb(r, g, b);")
-        import re
-        match = re.search(r'rgb\((\d+),\s*(\d+),\s*(\d+)\)', current_style)
-        if match:
-            r, g, b = int(match.group(1)), int(match.group(2)), int(match.group(3))
-            current_color = QColor(r, g, b)
-        else:
-            current_color = QColor(158, 16, 127)
-        
+        r,g,b = self.processing.getFeatheredMaskColor().tolist()
+        self.color_mask = [r, g, b]
+        current_color = QColor(r,g,b)
         # Abrir diálogo de color
         new_color = QColorDialog.getColor(current_color, self, "Seleccionar color de máscara")
         
         if new_color.isValid():
             r, g, b = new_color.red(), new_color.green(), new_color.blue()
+            self.color_mask = [r, g, b]
+            #self.processing.setFeatheredMaskColor([r,g,b])
             self.frame_mask_color.setStyleSheet(
                 f"background-color: rgb({r}, {g}, {b}); border: 2px solid #999;"
             )
@@ -1278,9 +1273,9 @@ class ConfigDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout()
         
-        # Group Box sin título
-        export_group = QGroupBox()
-        export_layout = QFormLayout()
+        # Group Box "Imágenes Análisis"
+        analysis_group = QGroupBox("Imágenes Análisis")
+        analysis_layout = QFormLayout()
         
         # Resolution DPI
         self.spin_export_dpi = QSpinBox()
@@ -1288,14 +1283,46 @@ class ConfigDialog(QDialog):
         self.spin_export_dpi.setValue(300)
         self.spin_export_dpi.setSingleStep(50)
         self.spin_export_dpi.setSuffix(" dpi")
-        export_layout.addRow("Resolution DPI:", self.spin_export_dpi)
+        analysis_layout.addRow("Resolution DPI:", self.spin_export_dpi)
         
-        export_group.setLayout(export_layout)
-        layout.addWidget(export_group)
+        analysis_group.setLayout(analysis_layout)
+        layout.addWidget(analysis_group)
+        
+        # Group Box "Resultados"
+        results_group = QGroupBox("Resultados")
+        results_layout = QVBoxLayout()
+        results_layout.setSpacing(10)
+        
+        # Folder Resultados
+        folder_layout = QHBoxLayout()
+        btn_results_folder = QPushButton("Seleccionar Carpeta")
+        btn_results_folder.clicked.connect(self.selectResultsFolder)
+        self.label_results_folder = QLabel("No seleccionado")
+        self.label_results_folder.setWordWrap(True)
+        self.label_results_folder.setStyleSheet("font-size: 11px; color: #a0a0a0;")
+        folder_layout.addWidget(btn_results_folder)
+        folder_layout.addWidget(self.label_results_folder, 1)
+        
+        results_layout.addWidget(QLabel("Folder Resultados:"))
+        results_layout.addLayout(folder_layout)
+        
+        results_group.setLayout(results_layout)
+        layout.addWidget(results_group)
+        
         layout.addStretch()
-        
         tab.setLayout(layout)
         return tab
+
+    def selectResultsFolder(self):
+        """Abre diálogo para seleccionar carpeta de resultados"""
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Seleccionar Carpeta de Resultados",
+            ".",
+            QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
+        )
+        if folder:
+            self.label_results_folder.setText(folder)
     
     # ==================== BUTTONS ====================
     def createButtonLayout(self):
@@ -1362,7 +1389,8 @@ class ConfigDialog(QDialog):
         self.spin_max_samples.setValue(config['color']['method']['max_samples'])
         
         # Export
-        self.spin_export_dpi.setValue(config['export']['dpi'])
+        self.spin_export_dpi.setValue(config['export']['analysis_images']['dpi'])
+        self.label_results_folder.setText(config['export']['results']['folder_path'])
     
     def restoreDefaults(self):
         """Restaura los valores por defecto"""
@@ -1387,61 +1415,60 @@ class ConfigDialog(QDialog):
     
     def getValues(self):
         """Retorna un diccionario con todos los valores configurados"""
-        # Extraer RGB del color de máscara
-        import re
-        mask_style = self.frame_mask_color.styleSheet()
-        match = re.search(r'rgb\((\d+),\s*(\d+),\s*(\d+)\)', mask_style)
-        if match:
-            mask_color = [int(match.group(1)), int(match.group(2)), int(match.group(3))]
-        else:
-            mask_color = [158, 16, 127]
 
-        dict_values = {
-            'camera': {
-                'auto_gain': self.check_auto_gain.isChecked(),
-                'preset_gain': self.combo_preset_gain.currentText(),
-                'exposition_time': self.spin_exposition_time.value(),
-                'description': 'Parámetros de la cámara'
-            },
-            'calibration': {
-                'color_checker_path': self.label_color_checker_path.text(),
-                'calibration_params_path': self.label_calib_params_path.text(),
-                'description': 'Rutas de calibración'
-            },
-            'segmentation': {
-                'scene': {
-                    'image_scale_size': self.spin_image_scale.value(),
-                    'marker_radius': self.spin_marker_radius.value()
-                },
-                'mask': {
-                    'mask_color': mask_color
-                },
-                'guided_filter': {
-                    'radius': self.spin_filter_radius.value(),
-                    'epsilon': self.spin_filter_epsilon.value()
-                },
-                'description': 'Parámetros de segmentación'
-            },
-            'color': {
-                'pantone': {
-                    'database_file': self.label_pantone_path.text()
-                },
-                'method': {
-                    'selected_method': self.combo_color_method.currentText(),
-                    'threshold_median': self.spin_threshold_median.value(),
-                    'threshold_kmeans': self.spin_threshold_kmeans.value(),
-                    'number_clusters': self.spin_number_clusters.value(),
-                    'threshold_softvoting': self.spin_threshold_softvoting.value(),
-                    'sigma': self.spin_sigma.value(),
-                    'max_samples': self.spin_max_samples.value()
-                },
-                'description': 'Parámetros de estimación de color'
-            },
-            'export': {
-                'dpi': self.spin_export_dpi.value(),
-                'description': 'Parámetros de exportación'
-            }
-        }
+        mask_color = self.color_mask
+
+        dict_values: dict = {
+                                'camera': {
+                                    'auto_gain': self.check_auto_gain.isChecked(),
+                                    'preset_gain': self.combo_preset_gain.currentText(),
+                                    'exposition_time': self.spin_exposition_time.value(),
+                                    'description': 'Parámetros de la cámara'
+                                },
+                                'calibration': {
+                                    'color_checker_path': self.label_color_checker_path.text(),
+                                    'calibration_params_path': self.label_calib_params_path.text(),
+                                    'description': 'Rutas de calibración'
+                                },
+                                'segmentation': {
+                                    'scene': {
+                                        'image_scale_size': self.spin_image_scale.value(),
+                                        'marker_radius': self.spin_marker_radius.value()
+                                    },
+                                    'mask': {
+                                        'mask_color': mask_color
+                                    },
+                                    'guided_filter': {
+                                        'radius': self.spin_filter_radius.value(),
+                                        'epsilon': self.spin_filter_epsilon.value()
+                                    },
+                                    'description': 'Parámetros de segmentación'
+                                },
+                                'color': {
+                                    'pantone': {
+                                        'database_file': self.label_pantone_path.text()
+                                    },
+                                    'method': {
+                                        'selected_method': self.combo_color_method.currentText(),
+                                        'threshold_median': self.spin_threshold_median.value(),
+                                        'threshold_kmeans': self.spin_threshold_kmeans.value(),
+                                        'number_clusters': self.spin_number_clusters.value(),
+                                        'threshold_softvoting': self.spin_threshold_softvoting.value(),
+                                        'sigma': self.spin_sigma.value(),
+                                        'max_samples': self.spin_max_samples.value()
+                                    },
+                                    'description': 'Parámetros de estimación de color'
+                                },
+                                'export': {
+                                    'analysis_images': {
+                                        'dpi': self.spin_export_dpi.value()
+                                    },
+                                    'results': {
+                                        'folder_path': self.label_results_folder.text()
+                                    },
+                                    'description': 'Parámetros de exportación'
+                                }
+                            }
         
         return dict_values
 
@@ -1495,16 +1522,12 @@ class MainWindow(QMainWindow):
         action_settings.triggered.connect(self.openSettingsDialog)
         #menu_file.addSeparator()
 
-        menu_edit = menu_bar.addMenu("Editar")
-        #menu_edit.setFont(self.menus_font)
-        action_mask_color = menu_edit.addAction("Cambiar color máscara")
-        action_mask_color.triggered.connect(self.openColorDialog)
-        submenu_delete = menu_edit.addMenu("Eliminar")
-        action_delete_last_point = submenu_delete.addAction("Último punto")
+        menu_delete = menu_bar.addMenu("Eliminar")
+        action_delete_last_point = menu_delete.addAction("Último punto")
         action_delete_last_point.triggered.connect(self.viewer.clearLastPoint)
-        action_delete_all_points = submenu_delete.addAction("Todos los puntos")
+        action_delete_all_points = menu_delete.addAction("Todos los puntos")
         action_delete_all_points.triggered.connect(self.viewer.clearAllPoints)
-        action_delete_mask = submenu_delete.addAction("Máscara")
+        action_delete_mask = menu_delete.addAction("Máscara")
         action_delete_mask.triggered.connect(self.viewer.clearMask)
         
         menu_calibrate = menu_bar.addMenu("Calibrar")
@@ -1531,24 +1554,13 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(self.config_manager.getStyle())
 
         # Initial config
-        #self.applyInitialConfig()
         self.applyConfigToComponents(self.config_manager.getConfig())
 
     # Methods
-    def applyInitialConfig(self):
-        """Aplica la configuración inicial a los componentes que lo necesitan"""
-        config = self.config_manager.getConfig()
-        
-        # Aplicar configuración de visualización
-        self.viewer.min_markpoint_radius = config['segmentation']['scene']['marker_radius']
-        
-        # Cargar rutas de calibración
-        self.calibration.color_checker_img_path = config['calibration']['color_checker_path']
-        self.calibration.params_path = config['calibration']['calibration_params_path']
 
     def openSettingsDialog(self) -> None:
         """Abre el diálogo de configuración"""
-        dialog = ConfigDialog(self, self.config_manager)
+        dialog = ConfigDialog(self, self.config_manager, self.processing)
         
         # Aplicar el mismo estilo que la ventana principal
         dialog.setStyleSheet(self.config_manager.getStyle())
@@ -1557,9 +1569,7 @@ class MainWindow(QMainWindow):
         if dialog.exec() == QDialog.Accepted:
             # Obtener los valores configurados
             values = dialog.getValues()
-
             self.config_manager.saveUserConfig(values)
-            
             # Aplicar los valores al processing si existe
             self.applyConfigToComponents(values)
                 
@@ -1578,6 +1588,14 @@ class MainWindow(QMainWindow):
         
         # Aplicar a Viewer
         self.viewer.min_markpoint_radius = config['segmentation']['scene']['marker_radius']
+
+        # Crear carpeta de resultados si no existe
+        results_folder = config['export']['results']['folder_path']
+        os.makedirs(results_folder, exist_ok=True)
+        
+        # Crear subcarpeta images
+        images_folder = os.path.join(results_folder, "images")
+        os.makedirs(images_folder, exist_ok=True)
         
         # Aplicar a Processing si existe
         if self.processing:
@@ -1586,11 +1604,9 @@ class MainWindow(QMainWindow):
             self.processing.eps_filter = config['segmentation']['guided_filter']['epsilon']**2
             self.processing.setFeatheredMaskColor(config['segmentation']['mask']['mask_color'])
             self.processing.pantone_database_path = config['color']['pantone']['database_file']
-            
+            self.processing.loadPantoneDatabase()
             # Actualizar tamaño de escala (requiere reiniciar processing con nueva imagen)
             # Este parámetro se aplicará en la próxima carga de imagen
-        
-        print("Configuración aplicada a todos los componentes")
 
     def createSidePanel(self) -> QWidget:
         """Crea el panel lateral con controles"""
@@ -1613,8 +1629,6 @@ class MainWindow(QMainWindow):
         self.button_take_photo.setFixedHeight(50) #40
         group_button_layout.addWidget(self.button_take_photo)
 
-        print(self.button_take_photo.styleSheet())
-
         self.button_run = QPushButton("Segmentar")
         self.button_run.clicked.connect(self.runSegmentation)
         self.button_run.setFixedHeight(50) #40
@@ -1636,59 +1650,229 @@ class MainWindow(QMainWindow):
 
         # -------------------- DISPLAY --------------------
 
-        group_box_1 = QGroupBox("Visualización")
-        group_layout_1 = QVBoxLayout()
-        group_layout_1.setContentsMargins(13, 15, 13, 10) 
-        group_layout_1.setSpacing(7)
+        group_box_view = QGroupBox("Visualización")
+        group_layout_view = QVBoxLayout()
+        group_layout_view.setContentsMargins(13, 15, 13, 10) 
+        group_layout_view.setSpacing(7)
         
         # Checkbox
         self.checkbox_hide_mask = QCheckBox("Ocultar máscara")
         self.checkbox_hide_mask.setChecked(False)
         self.checkbox_hide_mask.stateChanged.connect(self.hideMask)
-        group_layout_1.addWidget(self.checkbox_hide_mask)
+        group_layout_view.addWidget(self.checkbox_hide_mask)
 
         self.checkbox_hide_points = QCheckBox("Ocultar puntos")
         self.checkbox_hide_points.setChecked(False)
         self.checkbox_hide_points.stateChanged.connect(self.hidePoints)
-        group_layout_1.addWidget(self.checkbox_hide_points)
+        group_layout_view.addWidget(self.checkbox_hide_points)
 
-        group_box_1.setLayout(group_layout_1)
-        group_others_layout.addWidget(group_box_1)
+        group_box_view.setLayout(group_layout_view)
+        group_others_layout.addWidget(group_box_view)
 
         # -------------------- COLOR --------------------
 
-        group_box_2 = QGroupBox("Color")
-        group_layout_2 = QVBoxLayout()
-        group_layout_2.setContentsMargins(13, 15, 13, 10) 
-        group_layout_2.setSpacing(8)
-        
-        # Widget de color
-        self.color_pantone = QLabel("PANTONE")
-        self.color_pantone.setStyleSheet("font-weight: bold;")
-        group_layout_2.addWidget(self.color_pantone)
+        group_box_colors = QGroupBox("Color")
+        group_layout_colors = QVBoxLayout()
+        group_layout_colors.setContentsMargins(13, 15, 13, 10) 
+        group_layout_colors.setSpacing(10)
 
-        self.color_lab = QLabel("LAB")
-        self.color_lab.setStyleSheet("font-weight: normal;")
-        group_layout_2.addWidget(self.color_lab)
+        color_1_group_box_style = """
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #707070;
+                border-radius: 7px;
+                margin-top: 1ex;
+                margin-right: 0px;
+                margin-bottom: 0px;
+                margin-left: 0px;
+                padding: 13px 0px 0px 0px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 0px;
+                padding: 0px 3px 0px 0px;
+                margin: 0px 3px 0px 0px;
+                color: #e0e0e0;
+            }
+        """
+        color_2_group_box_style = """
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #707070;
+                border-radius: 7px;
+                margin-top: 1ex;
+                margin-right: 0px;
+                margin-bottom: 0px;
+                margin-left: 0px;
+                padding: 15px 0px 0px 0px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 0px;
+                padding: 0px 3px 0px 0px;
+                margin: 0px 3px 0px 0px;
+                color: #707070;
+            }
+        """
+        color_3_group_box_style = """
+            QGroupBox {
+                font-weight: bold;
+                border: 1px solid #707070;
+                border-radius: 7px;
+                margin-top: 1ex;
+                margin-right: 0px;
+                margin-bottom: 0px;
+                margin-left: 0px;
+                padding: 15px 0px 0px 0px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 0px;
+                padding: 0px 3px 0px 0px;
+                margin: 0px 3px 0px 0px;
+                color: #707070;
+            }
+        """
 
-        self.color_delta = QLabel("DELTA E")
-        #self.color_delta.setStyleSheet("font-weight: normal;")
-        group_layout_2.addWidget(self.color_delta)
+        color_display_buttons_style = """
+            QPushButton {
+                font-weight: bold;
+                font-size: 24px;
+                padding: 5px;
+                margin: 0px;
+                border: 1px solid #707070;
+                border-radius: 7px;
+                background-color: #424242;
+                color: #e0e0e0;
+            }
+        """
+
+        # ---- COLOR 1 ----
+        self.group_box_color_1 = QGroupBox("")
+        group_layout_color_1 = QHBoxLayout(self.group_box_color_1)
+        group_layout_color_1.setContentsMargins(10, 5, 10, 10) 
+        self.group_box_color_1.setStyleSheet(color_1_group_box_style)
+
+        # Left
+        left_widget_color_1 = QWidget()
+        left_layout_color_1 = QVBoxLayout(left_widget_color_1)
+        left_layout_color_1.setContentsMargins(0, 2, 0, 2)
+
+        #self.color_pantone_1 = QLabel("PANTONE")
+        #self.color_pantone_1.setStyleSheet("font-weight: bold;")
+        #left_layout_color_1.addWidget(self.color_pantone_1)
+
+        self.color_lab_1 = QLabel("LAB")
+        self.color_lab_1.setStyleSheet("font-weight: normal;")
+        left_layout_color_1.addWidget(self.color_lab_1)
+
+        self.color_delta_1 = QLabel("ΔE00")
+        self.color_delta_1.setStyleSheet("font-weight: normal;")
+        left_layout_color_1.addWidget(self.color_delta_1)
         
-        self.color_display = QFrame()
-        self.color_display.setFixedHeight(80)
-        self.color_display.setFrameStyle(QFrame.Box)
-        #self.color_display.setStyleSheet("background-color: rgb(128, 128, 128); border: none;")
-        group_layout_2.addWidget(self.color_display)
+        # Right
+        right_widget_color_1 = QWidget()
+        right_layout_color_1 = QVBoxLayout(right_widget_color_1)
+        right_layout_color_1.setContentsMargins(0, 0, 0, 0) 
+        
+        #self.color_display_1 = QFrame()
+        #self.color_display_1.setFixedHeight(60)
+        #self.color_display_1.setFixedWidth(80)
+        #self.color_display_1.setFrameStyle(QFrame.Box)
+        #self.color_display_1.setStyleSheet("background-color: rgb(128, 128, 128); border: none;")
+        self.color_display_1 = QPushButton("")
+        self.color_display_1.setFixedHeight(50)
+        self.color_display_1.setStyleSheet(color_display_buttons_style)
+
+
+        right_layout_color_1.addWidget(self.color_display_1)
+
+        group_layout_color_1.addWidget(left_widget_color_1)
+        group_layout_color_1.addWidget(right_widget_color_1)
+
+        # ---- OTHER COLORS ----
+        other_colors_widget = QWidget()
+        other_colors_layout = QHBoxLayout(other_colors_widget)
+        other_colors_layout.setContentsMargins(0, 0, 0, 0) 
+        other_colors_layout.setSpacing(10)
+
+        # Color 2
+        self.group_box_color_2 = QGroupBox("")
+        group_layout_color_2 = QVBoxLayout(self.group_box_color_2)
+        group_layout_color_2.setContentsMargins(10, 5, 10, 10) 
+        self.group_box_color_2.setStyleSheet(color_2_group_box_style)
+
+        #self.color_pantone_2 = QLabel("PANTONE")
+        #self.color_pantone_2.setStyleSheet("font-weight: bold;")
+        #group_layout_color_2.addWidget(self.color_pantone_2)
+
+        self.color_lab_2 = QLabel("LAB")
+        self.color_lab_2.setStyleSheet("font-weight: normal;")
+        group_layout_color_2.addWidget(self.color_lab_2)
+
+        self.color_delta_2 = QLabel("ΔE00")
+        self.color_delta_2.setStyleSheet("font-weight: normal;")
+        group_layout_color_2.addWidget(self.color_delta_2)
+
+        #self.color_display_2 = QFrame()
+        #self.color_display_2.setFixedHeight(40)
+        #self.color_display_2.setFrameStyle(QFrame.Box)
+        #self.color_display_2.setStyleSheet("background-color: rgb(128, 128, 128); border: none;")
+        self.color_display_2 = QPushButton("")
+        self.color_display_2.setFixedHeight(40)
+        self.color_display_2.setStyleSheet(color_display_buttons_style)
+
+        group_layout_color_2.addWidget(self.color_display_2)
+
+        # Color 3
+        self.group_box_color_3 = QGroupBox("")
+        group_layout_color_3 = QVBoxLayout(self.group_box_color_3)
+        group_layout_color_3.setContentsMargins(10, 5, 10, 10) 
+        self.group_box_color_3.setStyleSheet(color_3_group_box_style)
+
+        #self.color_pantone_3 = QLabel("PANTONE")
+        #self.color_pantone_3.setStyleSheet("font-weight: bold;")
+        #group_layout_color_3.addWidget(self.color_pantone_3)
+
+        self.color_lab_3 = QLabel("LAB")
+        self.color_lab_3.setStyleSheet("font-weight: normal;")
+        group_layout_color_3.addWidget(self.color_lab_3)
+
+        self.color_delta_3 = QLabel("ΔE00")
+        self.color_delta_3.setStyleSheet("font-weight: normal;")
+        group_layout_color_3.addWidget(self.color_delta_3)
+
+        #self.color_display_3 = QFrame()
+        #self.color_display_3.setFixedHeight(40)
+        #self.color_display_3.setFrameStyle(QFrame.Box)
+        #self.color_display_3.setStyleSheet("background-color: rgb(128, 128, 128); border: none;")
+        self.color_display_3 = QPushButton("")
+        self.color_display_3.setFixedHeight(40)
+        self.color_display_3.setStyleSheet(color_display_buttons_style)
+
+        group_layout_color_3.addWidget(self.color_display_3)
+
+
+        other_colors_layout.addWidget(self.group_box_color_2)
+        other_colors_layout.addWidget(self.group_box_color_3)
+        
         
         # Label con valores RGB
-        self.rgb_label = QLabel("Representación RGB")
-        self.rgb_label.setStyleSheet("font-size: 11px;")
-        self.rgb_label.setAlignment(Qt.AlignCenter)
-        group_layout_2.addWidget(self.rgb_label)
-        
-        group_box_2.setLayout(group_layout_2)
-        group_others_layout.addWidget(group_box_2)
+        #self.rgb_label = QLabel("Representación RGB")
+        #self.rgb_label.setStyleSheet("font-size: 11px;")
+        #self.rgb_label.setAlignment(Qt.AlignCenter)
+        #group_layout_2.addWidget(self.rgb_label)
+
+        group_layout_colors.addWidget(self.group_box_color_1)
+        group_layout_colors.addWidget(other_colors_widget)
+        group_box_colors.setLayout(group_layout_colors)
+        group_others_layout.addWidget(group_box_colors)
+
+
+        line = QFrame()
+        line.setFrameShape(QFrame.NoFrame)
+        line.setFixedHeight(1)
+        group_others_layout.addWidget(line)
 
         # -------------------- REGISTER --------------------
 
@@ -1735,98 +1919,125 @@ class MainWindow(QMainWindow):
         else:
             self.viewer.showAllPoints(True)
     
-    def updateColorDisplay(self, colors: dict) -> None:
+    def updateColorDisplay(self) -> None:
+        colors: dict =  self.processing.getTopColors()
         """Actualiza el widget de visualización de color"""
         if colors is not None:
-            r = colors["Color 1"]["RGB"][0]
-            g = colors["Color 1"]["RGB"][1]
-            b = colors["Color 1"]["RGB"][2]
-            self.color_display.setStyleSheet(
-                f"background-color: rgb({r}, {g}, {b}); border: 2px solid #999;"
-            )
-            #self.rgb_label.setText(f"R: {r}  G: {g}  B: {b}")
-            self.color_pantone.setText(colors["Color 1"]["Pantone Name"])
+            self.checkbox_hide_mask.setChecked(False)
+            self.checkbox_hide_points.setChecked(False)
+            # Color 1
+            r = int(colors["Color 1"]["RGB"][0])
+            g = int(colors["Color 1"]["RGB"][1])
+            b = int(colors["Color 1"]["RGB"][2])
+            color_display_button_style: str = f"""
+                    font-weight: bold;
+                    font-size: 24px;
+                    padding: 5px;
+                    margin: 0px;
+                    border: 1px solid #707070;
+                    border-radius: 7px;
+                    background-color: rgb({r}, {g}, {b});
+                    color: #e0e0e0;
+            """
+            self.color_display_1.setStyleSheet(color_display_button_style)
+            #self.color_pantone_1.setText(colors["Color 1"]["Pantone Name"])
+            self.group_box_color_1.setTitle(colors["Color 1"]["Pantone Name"])
             l = colors["Color 1"]["LAB"][0]
             a = colors["Color 1"]["LAB"][1]
             b = colors["Color 1"]["LAB"][2]
-            self.color_lab.setText(f"LAB: ({l:.5f}, {a:.1f}, {b:.1f})")
-            self.color_delta.setText(f"ΔE00: {colors["Color 1"]["ΔE00"]:.5f}")
-            self.checkbox_hide_mask.setChecked(False)
-            self.checkbox_hide_points.setChecked(False)
+            self.color_lab_1.setText(f"LAB: ({l:.5f}, {a:.1f}, {b:.1f})")
+            self.color_delta_1.setText(f"ΔE00: {colors["Color 1"]["ΔE00"]:.5f}")
+            # Color 2
+            r = int(colors["Color 2"]["RGB"][0])
+            g = int(colors["Color 2"]["RGB"][1])
+            b = int(colors["Color 2"]["RGB"][2])
+            color_display_button_style: str = f"""
+                    font-weight: bold;
+                    font-size: 24px;
+                    padding: 5px;
+                    margin: 0px;
+                    border: 1px solid #707070;
+                    border-radius: 7px;
+                    background-color: rgb({r}, {g}, {b});
+                    color: #e0e0e0;
+            """
+            self.color_display_2.setStyleSheet(color_display_button_style)
+            #self.color_pantone_2.setText(colors["Color 2"]["Pantone Name"])
+            self.group_box_color_2.setTitle(colors["Color 2"]["Pantone Name"])
+            l = colors["Color 2"]["LAB"][0]
+            a = colors["Color 2"]["LAB"][1]
+            b = colors["Color 2"]["LAB"][2]
+            self.color_lab_2.setText(f"LAB: ({l:.5f}, {a:.1f}, {b:.1f})")
+            self.color_delta_2.setText(f"ΔE00: {colors["Color 2"]["ΔE00"]:.5f}")
+            # Color 3
+            r = int(colors["Color 3"]["RGB"][0])
+            g = int(colors["Color 3"]["RGB"][1])
+            b = int(colors["Color 3"]["RGB"][2])
+            color_display_button_style: str = f"""
+                    font-weight: bold;
+                    font-size: 24px;
+                    padding: 5px;
+                    margin: 0px;
+                    border: 1px solid #707070;
+                    border-radius: 7px;
+                    background-color: rgb({r}, {g}, {b});
+                    color: #e0e0e0;
+            """
+            self.color_display_3.setStyleSheet(color_display_button_style)
+            #self.color_pantone_3.setText(colors["Color 3"]["Pantone Name"])
+            self.group_box_color_3.setTitle(colors["Color 3"]["Pantone Name"])
+            l = colors["Color 3"]["LAB"][0]
+            a = colors["Color 3"]["LAB"][1]
+            b = colors["Color 3"]["LAB"][2]
+            self.color_lab_3.setText(f"LAB: ({l:.5f}, {a:.1f}, {b:.1f})")
+            self.color_delta_3.setText(f"ΔE00: {colors["Color 3"]["ΔE00"]:.5f}")
     
-    def saveCSV(self) -> None:
-        id = self.input_id.text().strip()
-        if not id:
-            QMessageBox.warning(self, "Campo vacío", "Por favor ingrese un identificador antes de guardar.")
-            return None
-        
-        main_color = self.processing.getMainColor()
-
-        color_pantone: str = f"{main_color["Pantone Name"]}"
-        color_lab_pantone: str = f"({main_color["Pantone LAB"][0]:.5f}, {main_color["Pantone LAB"][1]:.1f}, {main_color["Pantone LAB"][2]:.1f})"
-        color_lab_original: str = f"({main_color["Original LAB"][0]:.5f}, {main_color["Original LAB"][1]:.1f}, {main_color["Original LAB"][2]:.1f})"
-        delta_E: str = f"{main_color["Delta E"]:.5f}"
-        img_path: str = f"{os.getcwd()}/registered_images/{id.lower().replace(" ","_")}.png"
-        
-        path_csv = "registros.xlsx"
-        file_exists: bool = os.path.exists(path_csv)
-
-        try:
-            # Abrir el archivo en modo append
-            with open(path_csv, mode='a', newline='', encoding='utf-8') as file:
-                writer = csv.writer(file)
-                
-                # Si el archivo no existe, escribir los headers
-                if not file_exists:
-                    writer.writerow(['Identificador', 'Color PANTONE', 'Color LAB PANTONE', 'Color LAB Original', 
-                                'ΔE00', 'Ubicación Imagen'])
-                
-                # Escribir los datos
-                writer.writerow([id, color_pantone, color_lab_pantone, color_lab_original, 
-                            delta_E, img_path])
-            
-            # Mostrar mensaje de éxito
-            QMessageBox.information(self, "Éxito", 
-                                f"Datos guardados correctamente en {path_csv}")
-            
-            # Limpiar el campo de texto después de guardar
-            self.input_id.clear()
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Error", 
-                            f"Error al guardar los datos: {str(e)}")
-
     def saveExcel(self) -> None:
         id = self.input_id.text().strip()
         if not id:
             QMessageBox.warning(self, "Campo vacío", "Por favor ingrese un identificador antes de guardar.")
             return None
         
-        main_color = self.processing.getMainColor()
+        colors: dict = self.processing.getTopColors()
+        config = self.config_manager.getConfig()
+        results_folder = config['export']['results']['folder_path']
 
-        color_pantone: str = f"{main_color["Pantone Name"]}"
-        color_lab_pantone: str = f"({main_color["Pantone LAB"][0]:.5f}, {main_color["Pantone LAB"][1]:.1f}, {main_color["Pantone LAB"][2]:.1f})"
-        color_lab_original: str = f"({main_color["Original LAB"][0]:.5f}, {main_color["Original LAB"][1]:.1f}, {main_color["Original LAB"][2]:.1f})"
-        delta_E: str = f"{main_color["Delta E"]:.5f}"
-        img_path: str = f"{os.getcwd()}/registered_images/{id.lower().replace(" ","_")}.png"
-        
-        path_excel = "registros.xlsx"
+        # Crear carpetas si no existen
+        os.makedirs(results_folder, exist_ok=True)
+        images_folder = os.path.join(results_folder, "images")
+        os.makedirs(images_folder, exist_ok=True)
+
+        # Rutas usando la carpeta configurada
+        img_filename: str = f"{id.lower().replace(' ','_')}.png"
+        img_path = os.path.join(images_folder, img_filename)
+        excel_path = os.path.join(results_folder, "registros.xlsx")
 
         new_data: dict = {
                             'Identificador': [id],
-                            'Color PANTONE': [color_pantone],
-                            'Color LAB PANTONE': [color_lab_pantone],
-                            'Color LAB Original': [color_lab_original],
-                            'ΔE00': [delta_E],
                             'Ubicación Imagen': [img_path]
                         }
+
+        for i in range(1, 4):
+            l = colors[f"Color {i}"]["LAB"][0]
+            a = colors[f"Color {i}"]["LAB"][1]
+            b = colors[f"Color {i}"]["LAB"][2]
+            new_data[f"Pantone Name {i}"] = f"{colors[f"Color {i}"]["Pantone Name"]}"
+            new_data[f"LAB {i}"] = f"({l}, {a}, {b})"
+            new_data[f"ΔE00 {i}"] = f"{colors[f"Color {i}"]["ΔE00"]}"
+
+
+        #main_color = self.processing.getMainColor()
+        #color_pantone: str = f"{main_color["Pantone Name"]}"
+        #color_lab_pantone: str = f"({main_color["Pantone LAB"][0]:.5f}, {main_color["Pantone LAB"][1]:.1f}, {main_color["Pantone LAB"][2]:.1f})"
+        #color_lab_original: str = f"({main_color["Original LAB"][0]:.5f}, {main_color["Original LAB"][1]:.1f}, {main_color["Original LAB"][2]:.1f})"
+        #delta_E: str = f"{main_color["Delta E"]:.5f}"
 
         new_df = pd.DataFrame(new_data)
 
         try:
-            if os.path.exists(path_excel):
+            if os.path.exists(excel_path):
                 # Leer el archivo existente
-                existing_df = pd.read_excel(path_excel)
+                existing_df = pd.read_excel(excel_path)
                 
                 # Concatenar los datos existentes con los nuevos
                 final_df = pd.concat([existing_df, new_df], ignore_index=True)
@@ -1835,13 +2046,15 @@ class MainWindow(QMainWindow):
                 final_df = new_df
             
             # Guardar el DataFrame en Excel
-            final_df.to_excel(path_excel, index=False, engine='openpyxl')
+            final_df.to_excel(excel_path, index=False, engine='openpyxl')
 
             self.processing.saveOriginalImage(img_path)
 
             # Mostrar mensaje de éxito
             QMessageBox.information(self, "Éxito", 
-                                f"Datos guardados correctamente en {path_excel}")
+                            f"Datos guardados correctamente:\n"
+                            f"- Excel: {excel_path}\n"
+                            f"- Imagen: {img_path}")
             
             # Limpiar el campo de texto después de guardar
             self.input_id.clear()
@@ -1934,8 +2147,7 @@ class MainWindow(QMainWindow):
                     self.processing.estimateColorBySoftVoting(sigma=config['color']['method']['sigma'],
                                                             max_samples=config['color']['method']['max_samples'],
                                                             min_weight_threshold=config['color']['method']['threshold_softvoting'])
-                
-                self.updateColorDisplay(self.processing.getTopColors())
+                self.updateColorDisplay()
                 self.doc = Documentation()
             else:
                 QMessageBox.warning(self, 
@@ -1982,21 +2194,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, 
                                 "Máscara no encontrada", 
                                 "Por favor, corre la segmentación antes de exportar el histograma.")
-    
-    def openColorDialog(self) -> None:
-        if self.processing:
-            r,g,b = self.processing.getFeatheredMaskColor().tolist()
-            default_color = QColor.fromRgb(r,g,b)
-            new_color = QColorDialog.getColor(default_color, self, "Elige un color")
-            if new_color.isValid():
-                r = new_color.red()
-                g = new_color.green()
-                b = new_color.blue()
-                self.processing.setFeatheredMaskColor([r,g,b])
-        else:
-            QMessageBox.warning(self, 
-                                "Imagen no encontrada", 
-                                "Por favor, carga una imagen antes de seleccionar el color.")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

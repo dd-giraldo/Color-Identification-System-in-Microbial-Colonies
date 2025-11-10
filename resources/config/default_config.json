@@ -40,7 +40,12 @@
         "description": "Parámetros de estimación de color"
     },
     "export": {
-        "dpi": 300,
+        "analysis_images": {
+            "dpi": 300
+        },
+        "results": {
+            "folder_path": "results"
+        },
         "description": "Parámetros de exportación"
     }
 }
