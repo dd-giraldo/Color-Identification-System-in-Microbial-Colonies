@@ -389,6 +389,7 @@ class ImageProcessing():
         
         self.findNearestPantone(dominant_color_lab)
 
+
     def estimateColorByKMeans(self, n_clusters: int = 3,
                                 min_weight_threshold: float = 0.3) -> np.ndarray:
         # Convertir a LAB en rangos estándar
@@ -398,12 +399,6 @@ class ImageProcessing():
         valid_mask: bool = self.feathered_mask > min_weight_threshold
         pixels_lab = image_lab[valid_mask]
         weights = self.feathered_mask[valid_mask]
-        
-        # Verificar que hay suficientes pixels
-        if len(pixels_lab) < n_clusters * 10:
-            # Fallback a media ponderada si hay muy pocos pixels
-            weights_norm = weights / np.sum(weights)
-            return np.average(pixels_lab, axis=0, weights=weights_norm)
 
         # Criterios de parada para K-means
         criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 0.2)
@@ -421,9 +416,9 @@ class ImageProcessing():
         labels = labels.flatten()
         
         # Calcular peso acumulado por cluster
-        cluster_weights = np.zeros(n_clusters)
+        cluster_weights = np.zeros(n_clusters, dtype=np.float32)
         for i in range(n_clusters):
-            cluster_mask = (labels == i)
+            cluster_mask: bool = (labels == i)
             cluster_weights[i] = np.sum(weights[cluster_mask])
         
         # Seleccionar cluster con mayor peso acumulado
@@ -432,84 +427,85 @@ class ImageProcessing():
         
         self.findNearestPantone(dominant_color_lab)
 
-    def estimateColorBySoftVoting(self, sigma: float = 10.0,
-                                max_samples: int = 5000,
+    
+    def estimateColorBySoftVoting(self,
+                                sigma: float = 10.0,
+                                n_clusters: int = 100,
                                 min_weight_threshold: float = 0.1) -> np.ndarray:
-        """
-        Método 3: Soft Voting Probabilístico (Optimizado Vectorizado)
-        Para cada pixel, calcula probabilidades de pertenencia a cada Pantone usando
-        CIEDE2000 y una función de kernel RBF. Acumula votos ponderados por la máscara
-        emplumada y selecciona el Pantone con mayor score.
-        
-        OPTIMIZACIÓN: Usa cálculo vectorizado de CIEDE2000 para todos los pixels
-        y Pantones simultáneamente, logrando una mejora de 100-1000x en velocidad.
-        
-        Args:
-            image_rgb: Imagen original en RGB (height, width, 3), dtype uint8
-            feathered_mask: Máscara emplumada en escala de grises [0, 1], dtype float32
-            pantone_db_path: Ruta al archivo JSON con la base de datos Pantone
-            sigma: Parámetro de temperatura para la función RBF (default: 10.0)
-            max_samples: Número máximo de pixels a muestrear (para eficiencia)
-            min_weight_threshold: Umbral mínimo de peso en máscara
-        
-        Returns:
-            dominant_color_lab: Color predominante en CIELAB (del Pantone ganador), dtype float32
-        """
-        
         # Convertir a LAB en rangos estándar
         image_lab = self.fromRGBtoLAB(self.original_image)
-        
+
         # Filtrar pixels con peso significativo
         valid_mask: bool = self.feathered_mask > min_weight_threshold
         pixels_lab = image_lab[valid_mask]
         weights = self.feathered_mask[valid_mask]
-        
-        # Submuestreo probabilístico si hay muchos pixels
-        if len(pixels_lab) > max_samples:
-            probabilities = weights / np.sum(weights)
-            indx = np.random.choice(len(pixels_lab), max_samples, 
-                                    replace=False, p=probabilities)
-            pixels_lab = pixels_lab[indx]
-            weights = weights[indx]
-        
-        # Extraer todos los colores LAB de Pantone en un array
-        n_pantones: int = len(self.pantone_lab_colors)
-        n_pixels: int = len(pixels_lab)
-        
-        # VECTORIZACIÓN: Calcular todas las distancias de una vez
-        # Reshape para broadcasting: pixels (n_pixels, 1, 3) vs pantones (1, n_pantones, 3)
-        pixels_reshaped = pixels_lab.reshape(n_pixels, 1, 3)
-        pantones_reshaped = self.pantone_lab_colors.reshape(1, n_pantones, 3)
-        
-        # Calcular matriz de distancias (n_pixels x n_pantones) de forma vectorizada
-        # deltaE_ciede2000 espera imágenes, así que agregamos dimensión espacial dummy
-        pixels_broadcast = np.repeat(pixels_reshaped[:, np.newaxis, :, :], n_pantones, axis=1)
-        pantones_broadcast = np.repeat(pantones_reshaped[np.newaxis, :, :, :], n_pixels, axis=0)
-        
-        # Calcular distancias vectorizadas (shape: n_pixels x n_pantones)
-        distances = deltaE_ciede2000(pixels_broadcast, pantones_broadcast).squeeze()
-        
-        # Convertir distancias a probabilidades usando RBF kernel
-        # Aplicar sobre toda la matriz de distancias
-        probabilities = np.exp(-distances**2 / (2 * sigma**2))
-        
-        # Normalizar probabilidades por fila (cada pixel suma 1.0)
-        probabilities = probabilities / probabilities.sum(axis=1, keepdims=True)
-        
-        # Acumular scores ponderados por peso espacial
-        # weights shape: (n_pixels,) -> reshape a (n_pixels, 1) para broadcasting
-        weighted_probs = probabilities * weights.reshape(-1, 1)
-        scores = weighted_probs.sum(axis=0)  # Sumar sobre pixels
-        
-        # Seleccionar Pantone con mayor score
-        #winner_idx = np.argmax(scores)
-        #dominant_color_lab = np.array(pantone_db[winner_idx]['lab'], dtype=np.float32)
 
-        # Seleccionar top 3 Pantones
-        sorted_3_indx = np.argsort(scores)[:-3]
-        for i, indx in enumerate(sorted_3_indx):
+        # Criterios de parada para K-means
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0)
+        
+        # Ejecutar K-means
+        _, labels, centroids = cv2.kmeans(
+            pixels_lab.astype(np.float32), 
+            n_clusters, 
+            None, 
+            criteria, 
+            10,  # intentos
+            cv2.KMEANS_PP_CENTERS
+        )
+        
+        labels = labels.flatten()
+        
+        # Calcular peso acumulado por cluster
+        cluster_weights = np.zeros(n_clusters, dtype=np.float32)
+        for i in range(n_clusters):
+            cluster_mask: bool = (labels == i)
+            cluster_weights[i] = np.sum(weights[cluster_mask])
+
+        # Normalizar pesos
+        cluster_weights = cluster_weights / np.sum(cluster_weights)
+
+        # Soft Voting Probabilístico (Kernel RBF)
+        n_pantone = len(self.pantone_lab_colors)
+
+        distances_ciede = np.zeros((n_clusters, n_pantone), dtype=np.float32)
+
+        for i in range(n_clusters):
+            centroid_lab = centroids[i].reshape(1, 3)
+            distances_ciede[i] = deltaE_ciede2000(centroid_lab, self.pantone_lab_colors)
+        
+        probabilities = np.exp(-(distances_ciede**2) / (2 * sigma**2))
+        pantone_scores = cluster_weights.dot(probabilities)
+
+        top_3_indx = np.argsort(pantone_scores)[-3:][::-1]
+        for i, indx in enumerate(top_3_indx):
             name = self.pantone_name_colors[indx]
             lab = self.pantone_lab_colors[indx]
+            rgb = np.astype(np.round(lab2rgb(lab)*255), np.uint8)
+            self.top_colors[f"Color {i+1}"] = {
+                                            "Pantone Name": name,
+                                            "LAB": lab,
+                                            "RGB": rgb,
+                                            "ΔE00": -1
+                                            }
+
+    @staticmethod
+    def computeDeltaE1976(pixels_lab: np.ndarray, 
+                            pantones_lab: np.ndarray) -> np.ndarray:
+        """
+        Calcula Delta E 1976 (distancia euclidiana en LAB) vectorizada.
+        Extremadamente rápido (~1000x más rápido que CIEDE2000).
+        
+        Args:
+            pixels_lab: (n_pixels, 3)
+            pantones_lab: (n_pantones, 3)
+        
+        Returns:
+            distances: (n_pixels, n_pantones) - distancias euclidianas
+        """
+        # Broadcasting: (n_pixels, 1, 3) - (1, n_pantones, 3)
+        diff = pixels_lab[:, np.newaxis, :] - pantones_lab[np.newaxis, :, :]
+        distances = np.sqrt(np.sum(diff**2, axis=2))
+        return distances
     
     @staticmethod
     def fromRGBtoLAB(image_rgb: np.ndarray) -> np.ndarray:
@@ -855,7 +851,7 @@ class ConfigDialog(QDialog):
         
         # Configuración de la ventana
         self.setWindowTitle("Configuración")
-        self.setMinimumSize(500, 400)
+        self.setMinimumSize(500, 420)
 
         flags = self.windowFlags()
 
@@ -1204,12 +1200,12 @@ class ConfigDialog(QDialog):
         self.spin_sigma.setSingleStep(1.0)
         self.method_params_layout.addRow(self.label_sigma, self.spin_sigma)
         
-        self.label_max_samples = QLabel("Max Samples:")
-        self.spin_max_samples = QSpinBox()
-        self.spin_max_samples.setRange(100, 50000)
-        self.spin_max_samples.setValue(5000)
-        self.spin_max_samples.setSingleStep(500)
-        self.method_params_layout.addRow(self.label_max_samples, self.spin_max_samples)
+        self.label_n_clusters_soft = QLabel("Numero Clusters:")
+        self.spin_n_clusters_soft = QSpinBox()
+        self.spin_n_clusters_soft.setRange(3, 1000)
+        self.spin_n_clusters_soft.setValue(100)
+        self.spin_n_clusters_soft.setSingleStep(1)
+        self.method_params_layout.addRow(self.label_n_clusters_soft, self.spin_n_clusters_soft)
         
         method_layout.addLayout(self.method_params_layout)
         method_group.setLayout(method_layout)
@@ -1247,8 +1243,8 @@ class ConfigDialog(QDialog):
         self.spin_threshold_softvoting.hide()
         self.label_sigma.hide()
         self.spin_sigma.hide()
-        self.label_max_samples.hide()
-        self.spin_max_samples.hide()
+        self.label_n_clusters_soft.hide()
+        self.spin_n_clusters_soft.hide()
         
         # Mostrar solo los parámetros del método seleccionado
         if method == "Median":
@@ -1264,8 +1260,8 @@ class ConfigDialog(QDialog):
             self.spin_threshold_softvoting.show()
             self.label_sigma.show()
             self.spin_sigma.show()
-            self.label_max_samples.show()
-            self.spin_max_samples.show()
+            self.label_n_clusters_soft.show()
+            self.spin_n_clusters_soft.show()
     
     # ==================== TAB 5: EXPORT ====================
     def createExportTab(self):
@@ -1386,7 +1382,7 @@ class ConfigDialog(QDialog):
         self.spin_number_clusters.setValue(config['color']['method']['number_clusters'])
         self.spin_threshold_softvoting.setValue(config['color']['method']['threshold_softvoting'])
         self.spin_sigma.setValue(config['color']['method']['sigma'])
-        self.spin_max_samples.setValue(config['color']['method']['max_samples'])
+        self.spin_n_clusters_soft.setValue(config['color']['method']['n_clusters_soft'])
         
         # Export
         self.spin_export_dpi.setValue(config['export']['analysis_images']['dpi'])
@@ -1455,7 +1451,7 @@ class ConfigDialog(QDialog):
                                         'number_clusters': self.spin_number_clusters.value(),
                                         'threshold_softvoting': self.spin_threshold_softvoting.value(),
                                         'sigma': self.spin_sigma.value(),
-                                        'max_samples': self.spin_max_samples.value()
+                                        'n_clusters_soft': self.spin_n_clusters_soft.value()
                                     },
                                     'description': 'Parámetros de estimación de color'
                                 },
@@ -1596,6 +1592,8 @@ class MainWindow(QMainWindow):
         # Crear subcarpeta images
         images_folder = os.path.join(results_folder, "images")
         os.makedirs(images_folder, exist_ok=True)
+
+        
         
         # Aplicar a Processing si existe
         if self.processing:
@@ -1605,8 +1603,12 @@ class MainWindow(QMainWindow):
             self.processing.setFeatheredMaskColor(config['segmentation']['mask']['mask_color'])
             self.processing.pantone_database_path = config['color']['pantone']['database_file']
             self.processing.loadPantoneDatabase()
-            # Actualizar tamaño de escala (requiere reiniciar processing con nueva imagen)
-            # Este parámetro se aplicará en la próxima carga de imagen
+            # Cambiar color mascara
+            if self.viewer.mask_item:
+                self.viewer.clearMask()
+                f_color = self.processing.getFeatheredMaskColor()
+                feathered_mask_colored = self.processing.createColoredMask(self.processing.getScaledFeatheredMask(), f_color)
+                self.viewer.addOverlay(self.viewer.fromCV2ToQPixmap(feathered_mask_colored))
 
     def createSidePanel(self) -> QWidget:
         """Crea el panel lateral con controles"""
@@ -1946,7 +1948,12 @@ class MainWindow(QMainWindow):
             a = colors["Color 1"]["LAB"][1]
             b = colors["Color 1"]["LAB"][2]
             self.color_lab_1.setText(f"LAB: ({l:.5f}, {a:.1f}, {b:.1f})")
-            self.color_delta_1.setText(f"ΔE00: {colors["Color 1"]["ΔE00"]:.5f}")
+            delta = colors["Color 1"]["ΔE00"]
+            if delta < 0:
+                self.color_delta_1.hide()
+            else:
+                self.color_delta_1.setText(f"ΔE00: {delta:.5f}")
+                self.color_delta_1.show()
             # Color 2
             r = int(colors["Color 2"]["RGB"][0])
             g = int(colors["Color 2"]["RGB"][1])
@@ -1968,7 +1975,12 @@ class MainWindow(QMainWindow):
             a = colors["Color 2"]["LAB"][1]
             b = colors["Color 2"]["LAB"][2]
             self.color_lab_2.setText(f"LAB: ({l:.5f}, {a:.1f}, {b:.1f})")
-            self.color_delta_2.setText(f"ΔE00: {colors["Color 2"]["ΔE00"]:.5f}")
+            delta = colors["Color 2"]["ΔE00"]
+            if delta < 0:
+                self.color_delta_2.hide()
+            else:
+                self.color_delta_2.setText(f"ΔE00: {delta:.5f}")
+                self.color_delta_2.show()
             # Color 3
             r = int(colors["Color 3"]["RGB"][0])
             g = int(colors["Color 3"]["RGB"][1])
@@ -1990,7 +2002,12 @@ class MainWindow(QMainWindow):
             a = colors["Color 3"]["LAB"][1]
             b = colors["Color 3"]["LAB"][2]
             self.color_lab_3.setText(f"LAB: ({l:.5f}, {a:.1f}, {b:.1f})")
-            self.color_delta_3.setText(f"ΔE00: {colors["Color 3"]["ΔE00"]:.5f}")
+            delta = colors["Color 3"]["ΔE00"]
+            if delta < 0:
+                self.color_delta_3.hide()
+            else:
+                self.color_delta_3.setText(f"ΔE00: {delta:.5f}")
+                self.color_delta_3.show()
     
     def saveExcel(self) -> None:
         id = self.input_id.text().strip()
@@ -2139,13 +2156,13 @@ class MainWindow(QMainWindow):
 
                 
                 if color_method == "Median":
-                    self.processing.estimateColorsByWeightedMedian(min_weight_threshold=config['color']['method']['threshold_median'] )
+                    self.processing.estimateColorsByWeightedMedian(min_weight_threshold=config['color']['method']['threshold_median'])
                 elif color_method == "KMeans":
                     self.processing.estimateColorByKMeans(n_clusters=config['color']['method']['number_clusters'],
                                                         min_weight_threshold=config['color']['method']['threshold_kmeans'])
                 elif color_method == "SoftVoting":
                     self.processing.estimateColorBySoftVoting(sigma=config['color']['method']['sigma'],
-                                                            max_samples=config['color']['method']['max_samples'],
+                                                            n_clusters=config['color']['method']['n_clusters_soft'],
                                                             min_weight_threshold=config['color']['method']['threshold_softvoting'])
                 self.updateColorDisplay()
                 self.doc = Documentation()

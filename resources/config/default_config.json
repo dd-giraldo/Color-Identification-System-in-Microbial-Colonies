@@ -35,7 +35,7 @@
             "number_clusters": 3,
             "threshold_softvoting": 0.1,
             "sigma": 10.0,
-            "max_samples": 5000
+            "n_clusters_soft": 100
         },
         "description": "Parámetros de estimación de color"
     },
