@@ -6,8 +6,7 @@
         "description": "Parámetros de la cámara"
     },
     "calibration": {
-        "color_checker_path": "resources/calibration/color_checker.jpg",
-        "calibration_params_path": "resources/calibration/calibration_params.pickle",
+        "calibration_params_path": "resources/calibration/default_calibration_params.pickle",
         "description": "Rutas de calibración"
     },
     "segmentation": {
@@ -44,7 +43,8 @@
             "dpi": 300
         },
         "results": {
-            "folder_path": "results"
+            "folder_path": "results",
+            "save_original_img": 1
         },
         "description": "Parámetros de exportación"
     }
