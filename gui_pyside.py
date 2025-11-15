@@ -20,7 +20,6 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 import json
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
-import csv
 
 class Documentation():
     def __init__(self) -> None:
@@ -53,22 +52,6 @@ class Documentation():
                     ax.set_ylabel(f'r = {r}', fontsize=12, rotation=90, labelpad=7, ha='center', va='center')
         img_path = "resources/exported_images/filter_comparison_image.png"
         plt.subplots_adjust(wspace=0.0, hspace=0.0)
-        plt.savefig(img_path, dpi=300, bbox_inches='tight')
-        return img_path
-
-    @staticmethod
-    def createMaskComparisionImage(img_raw_mask, raw_color, img_feathered_mask, feathered_color):
-        fig, ax = plt.subplots(1, 1, figsize=(8, 6))
-        ax.imshow(img_raw_mask)
-        ax.imshow(img_feathered_mask)
-        ax.set_title("Máscaras Superpuestas")
-        ax.axis('off')
-        raw_color = np.hstack((raw_color/255, [0.4]))
-        feathered_color = np.hstack((feathered_color/255, [0.4]))
-        raw_patch = mpatches.Patch(color=raw_color, label='Máscara cruda')
-        feathered_patch = mpatches.Patch(color=feathered_color, label='Máscara filtrada')
-        ax.legend(handles=[raw_patch, feathered_patch], loc='upper right')
-        img_path = "resources/exported_images/mask_comparison_image.png"
         plt.savefig(img_path, dpi=300, bbox_inches='tight')
         return img_path
     
@@ -257,9 +240,8 @@ class ImageProcessing():
         
 
     # Methods
-    def loadImage(self, source_image_path, calibration) -> None:
-        # Load image
-        self.original_image = cv2.cvtColor(self.cropSquare(cv2.imread(source_image_path)), cv2.COLOR_BGR2RGB)
+    def loadImage(self, image, calibration) -> None:
+        self.original_image = self.cropSquare(image)
         model = calibration.reconstructModelFromParams()
         self.calibrated_image = calibration.applyColorCorrection(self.original_image, model)
         self.original_image_size = self.calibrated_image.shape[:2]
@@ -298,7 +280,6 @@ class ImageProcessing():
     def getScaledFeatheredMask(self):
         return self.scaled_feathered_mask
     
-        # NO USADA
     def getScore(self):
         return self.score
 
@@ -614,8 +595,6 @@ class Viewer(QGraphicsView):
     # Initialization
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        #self.scene = QGraphicsScene(self)
-        #self.setScene(self.scene)
         self.scene = None
         self.pixmap_item = None
         self.mask_item = None
@@ -1562,21 +1541,14 @@ class MainWindow(QMainWindow):
         self.source_img_path = None
         self.doc = None
 
-        # NUEVO: Inicializar el gestor de configuración
+        # Inicializar el gestor de configuración
         self.config_manager = ConfigManager()
 
         self.calibration = Calibration(self.config_manager)
         self.processing = ImageProcessing()
 
-        
-
         # Window Settings
         self.setWindowTitle("SACISMC")
-        #self.setFixedWidth(1020)
-        #self.setFixedHeight(720)
-        #self.setFixedSize(1020, 720)  # Tamaño fijo de la ventana
-        #self.setMinimumSize(1020, 720)
-        #self.setMaximumSize(1020, 720)
 
         # Widgets
         self.viewer = Viewer()
@@ -1718,12 +1690,6 @@ class MainWindow(QMainWindow):
 
         self.group_box_button.setLayout(group_button_layout)
         layout.addWidget(self.group_box_button)
-
-        # Otro separador
-        #line = QFrame()
-        #line.setFrameShape(QFrame.HLine)
-        #line.setFrameShadow(QFrame.Sunken)
-        #layout.addWidget(line)
 
         self.group_box_others = QWidget()
         group_others_layout = QVBoxLayout()
@@ -1892,8 +1858,6 @@ class MainWindow(QMainWindow):
 
         other_colors_layout.addWidget(self.group_box_color_2)
         other_colors_layout.addWidget(self.group_box_color_3)
-
-
 
         group_layout_colors.addWidget(self.group_box_color_1)
         group_layout_colors.addWidget(other_colors_widget)
@@ -2183,7 +2147,6 @@ class MainWindow(QMainWindow):
                     color: #e0e0e0;
             """
             self.color_display_1.setStyleSheet(color_display_button_style)
-            #self.color_pantone_1.setText(colors["Color 1"]["Pantone Name"])
             self.group_box_color_1.setTitle(colors["Color 1"]["Pantone Name"])
             l = colors["Color 1"]["LAB"][0]
             a = colors["Color 1"]["LAB"][1]
@@ -2210,7 +2173,6 @@ class MainWindow(QMainWindow):
                     color: #e0e0e0;
             """
             self.color_display_2.setStyleSheet(color_display_button_style)
-            #self.color_pantone_2.setText(colors["Color 2"]["Pantone Name"])
             self.group_box_color_2.setTitle(colors["Color 2"]["Pantone Name"])
             l = colors["Color 2"]["LAB"][0]
             a = colors["Color 2"]["LAB"][1]
@@ -2237,7 +2199,6 @@ class MainWindow(QMainWindow):
                     color: #e0e0e0;
             """
             self.color_display_3.setStyleSheet(color_display_button_style)
-            #self.color_pantone_3.setText(colors["Color 3"]["Pantone Name"])
             self.group_box_color_3.setTitle(colors["Color 3"]["Pantone Name"])
             l = colors["Color 3"]["LAB"][0]
             a = colors["Color 3"]["LAB"][1]
@@ -2393,10 +2354,20 @@ class MainWindow(QMainWindow):
 
     def openImage(self) -> None:
         self.source_img_path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar Imagen", "resources/test_images", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
+            self, "Seleccionar Imagen", "resources/test_images", "Archivos de Imagen (*.png *.npy *.dng)"
         )
         if self.source_img_path:
-            self.processing.loadImage(self.source_img_path, self.calibration)
+
+            ext = os.path.splitext(self.source_img_path)[1].lower()
+            if ext == ".png":
+                image = cv2.cvtColor(cv2.imread(self.source_img_path), cv2.COLOR_BGR2RGB)
+            elif ext == ".npy":
+                image = np.load(self.source_img_path)
+            else:
+                QMessageBox.warning(self, "Formato no soportado",
+                                    f"El formato {ext} no es válido para abrir.")
+
+            self.processing.loadImage(image, self.calibration)
             self.viewer.loadScene()
             self.viewer.clearVariables()
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.processing.getScaledImage()))            
