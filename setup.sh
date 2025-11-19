@@ -11,7 +11,7 @@ pip install openpyxl
 pip install matplotlib
 pip install opencv-python
 pip install opencv-contrib-python
-pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 pip install 'git+https://github.com/facebookresearch/sam2.git'
 pip install pyside6
 pip install scikit-image

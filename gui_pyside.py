@@ -21,6 +21,7 @@ import json
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
+
 class Documentation():
     def __init__(self) -> None:
         self.list_r = [2, 4, 8, 12]
@@ -104,8 +105,15 @@ class Calibration():
         return self.params_path
     
     def loadRawImage(self, file_path: str) -> None:
-        self.color_checker_raw_image = np.load(file_path)
-
+        ext: str = os.path.splitext(file_path)[1].lower()
+        if ext == ".png":
+            self.color_checker_raw_image = cv2.cvtColor(cv2.imread(file_path), cv2.COLOR_BGR2RGB)
+        elif ext == ".npy":
+            self.color_checker_raw_image = np.load(file_path)
+        else:
+            QMessageBox.warning(self, "Formato no soportado",
+                                f"El formato {ext} no es válido para abrir.")
+        
     def getRawImage(self):
         return self.color_checker_raw_image
 
@@ -837,7 +845,7 @@ class ConfigManager:
     def __init__(self) -> None:
         self.default_config_path = "resources/config/default_config.json"
         self.user_config_path = "resources/config/user_config.json"
-        self.style_path = "resources/config/dark_theme.qss"
+        self.style_path = "resources/styles/dark_theme.qss"
         self.config = None
         self.style = None
 
@@ -928,7 +936,7 @@ class ConfigDialog(QDialog):
         
         # Configuración de la ventana
         self.setWindowTitle("Configuración")
-        self.setMinimumSize(500, 420)
+        self.setMinimumSize(550, 440)
 
         flags = self.windowFlags()
 
@@ -950,11 +958,11 @@ class ConfigDialog(QDialog):
         self.tab_widget = QTabWidget()
         
         # Crear las diferentes pestañas
-        self.tab_widget.addTab(self.createCameraTab(), "Camera")
-        self.tab_widget.addTab(self.createCalibrationTab(), "Calibration")
-        self.tab_widget.addTab(self.createSegmentationTab(), "Segmentation")
+        self.tab_widget.addTab(self.createCameraTab(), "Cámara")
+        self.tab_widget.addTab(self.createCalibrationTab(), "Calibración")
+        self.tab_widget.addTab(self.createSegmentationTab(), "Segmentación")
         self.tab_widget.addTab(self.createColorTab(), "Color")
-        self.tab_widget.addTab(self.createExportTab(), "Export")
+        self.tab_widget.addTab(self.createExportTab(), "Exportar")
         
         main_layout.addWidget(self.tab_widget)
         
@@ -1008,16 +1016,17 @@ class ConfigDialog(QDialog):
         # Group Box sin título
         camera_group = QGroupBox()
         camera_layout = QFormLayout()
+        camera_layout.setHorizontalSpacing(20)
         
         # Auto gain (CheckBox)
         self.check_auto_gain = QCheckBox()
         self.check_auto_gain.setChecked(True)
-        camera_layout.addRow("Auto gain:", self.check_auto_gain)
+        camera_layout.addRow("Ganancia automática", self.check_auto_gain)
         
         # Preset gain (ComboBox)
         self.combo_preset_gain = QComboBox()
         self.combo_preset_gain.addItems(["Low", "Medium", "High"])
-        camera_layout.addRow("Preset gain:", self.combo_preset_gain)
+        camera_layout.addRow("Preset gain", self.combo_preset_gain)
         
         # Exposition time (SpinBox en microsegundos)
         self.spin_exposition_time = QSpinBox()
@@ -1025,7 +1034,7 @@ class ConfigDialog(QDialog):
         self.spin_exposition_time.setValue(10000)
         self.spin_exposition_time.setSuffix(" µs")
         self.spin_exposition_time.setSingleStep(1000)
-        camera_layout.addRow("Exposition time:", self.spin_exposition_time)
+        camera_layout.addRow("Tiempo de exposición", self.spin_exposition_time)
         
         camera_group.setLayout(camera_layout)
         layout.addWidget(camera_group)
@@ -1055,7 +1064,7 @@ class ConfigDialog(QDialog):
         params_layout.addWidget(btn_calib_params)
         params_layout.addWidget(self.label_calib_params_path, 1)
         
-        calibration_layout.addWidget(QLabel("Calibration params file path:"))
+        calibration_layout.addWidget(QLabel("Archivo parámetros de calibración"))
         calibration_layout.addLayout(params_layout)
         
         calibration_group.setLayout(calibration_layout)
@@ -1083,8 +1092,9 @@ class ConfigDialog(QDialog):
         layout = QVBoxLayout()
         
         # Group Box "Scene"
-        scene_group = QGroupBox("Scene")
+        scene_group = QGroupBox("Escena")
         scene_layout = QFormLayout()
+        scene_layout.setHorizontalSpacing(20)
         
         # Image scale size
         self.spin_image_scale = QSpinBox()
@@ -1092,51 +1102,54 @@ class ConfigDialog(QDialog):
         self.spin_image_scale.setValue(720)
         self.spin_image_scale.setSingleStep(64)
         self.spin_image_scale.setSuffix(" px")
-        scene_layout.addRow("Image scale size:", self.spin_image_scale)
+        scene_layout.addRow("Tamaño imagen escalada", self.spin_image_scale)
         
         # Marker radius
         self.spin_marker_radius = QSpinBox()
         self.spin_marker_radius.setRange(1, 20)
         self.spin_marker_radius.setValue(1)
         self.spin_marker_radius.setSuffix(" px")
-        scene_layout.addRow("Marker radius:", self.spin_marker_radius)
+        scene_layout.addRow("Radio punto", self.spin_marker_radius)
         
         scene_group.setLayout(scene_layout)
         layout.addWidget(scene_group)
         
         # Group Box "Mask"
-        mask_group = QGroupBox("Mask")
+        mask_group = QGroupBox("Máscara")
         mask_layout = QFormLayout()
+        mask_layout.setHorizontalSpacing(20)
         
         # Mask color (Frame + Button)
         mask_color_layout = QHBoxLayout()
+        mask_color_layout.setSpacing(10)
         self.frame_mask_color = QFrame()
         self.frame_mask_color.setFixedSize(60, 30)
         self.frame_mask_color.setFrameStyle(QFrame.Box)
         self.frame_mask_color.setStyleSheet("background-color: rgb(158, 16, 127); border: 2px solid #999;")
         
-        btn_mask_color = QPushButton("Cambiar color")
+        btn_mask_color = QPushButton("Cambiar Color")
         btn_mask_color.clicked.connect(self.selectMaskColor)
         
         mask_color_layout.addWidget(self.frame_mask_color)
         mask_color_layout.addWidget(btn_mask_color)
         mask_color_layout.addStretch()
         
-        mask_layout.addRow("Mask color:", mask_color_layout)
+        mask_layout.addRow("Color máscara", mask_color_layout)
         
         mask_group.setLayout(mask_layout)
         layout.addWidget(mask_group)
         
         # Group Box "Guided Filter"
-        filter_group = QGroupBox("Guided Filter")
+        filter_group = QGroupBox("Filtro Guiado")
         filter_layout = QFormLayout()
+        filter_layout.setHorizontalSpacing(20)
         
         # Radius
         self.spin_filter_radius = QSpinBox()
         self.spin_filter_radius.setRange(1, 50)
         self.spin_filter_radius.setValue(2)
         self.spin_filter_radius.setSuffix(" px")
-        filter_layout.addRow("Radius:", self.spin_filter_radius)
+        filter_layout.addRow("Radio ventana", self.spin_filter_radius)
         
         # Epsilon
         self.spin_filter_epsilon = QDoubleSpinBox()
@@ -1145,7 +1158,7 @@ class ConfigDialog(QDialog):
         self.spin_filter_epsilon.setDecimals(2)
         self.spin_filter_epsilon.setSingleStep(0.01)
         self.spin_filter_epsilon.setSuffix("²")
-        filter_layout.addRow("Epsilon (ε²):", self.spin_filter_epsilon)
+        filter_layout.addRow("Epsilon (ε²)", self.spin_filter_epsilon)
         
         filter_group.setLayout(filter_layout)
         layout.addWidget(filter_group)
@@ -1183,7 +1196,7 @@ class ConfigDialog(QDialog):
         
         # Pantone Database File
         pantone_file_layout = QHBoxLayout()
-        btn_pantone_file = QPushButton("Seleccionar Database")
+        btn_pantone_file = QPushButton("Seleccionar Base de Datos")
         btn_pantone_file.clicked.connect(self.selectPantoneDatabase)
         self.label_pantone_path = QLabel("No seleccionado")
         self.label_pantone_path.setWordWrap(True)
@@ -1191,29 +1204,31 @@ class ConfigDialog(QDialog):
         pantone_file_layout.addWidget(btn_pantone_file)
         pantone_file_layout.addWidget(self.label_pantone_path, 1)
         
-        pantone_layout.addWidget(QLabel("Pantone Database File:"))
+        pantone_layout.addWidget(QLabel("Archivo base de datos Pantone"))
         pantone_layout.addLayout(pantone_file_layout)
         
         pantone_group.setLayout(pantone_layout)
         layout.addWidget(pantone_group)
         
         # Group Box "Color Method"
-        method_group = QGroupBox("Color Method")
+        method_group = QGroupBox("Método de color")
         method_layout = QVBoxLayout()
         
         # Select method (ComboBox)
         method_select_layout = QFormLayout()
+        method_select_layout.setHorizontalSpacing(20)
         self.combo_color_method = QComboBox()
-        self.combo_color_method.addItems(["Median", "KMeans", "SoftVoting"])
+        self.combo_color_method.addItems(["Mediana", "K-Means", "Soft Voting"])
         self.combo_color_method.currentTextChanged.connect(self.onColorMethodChanged)
-        method_select_layout.addRow("Select method:", self.combo_color_method)
+        method_select_layout.addRow("Seleccionar método", self.combo_color_method)
         method_layout.addLayout(method_select_layout)
         
         # Contenedor para parámetros condicionales
         self.method_params_layout = QFormLayout()
+        self.method_params_layout.setHorizontalSpacing(20)
         
         # Parámetros para Median
-        self.label_threshold_median = QLabel("Threshold Median:")
+        self.label_threshold_median = QLabel("Umbral máscara")
         self.spin_threshold_median = QDoubleSpinBox()
         self.spin_threshold_median.setRange(0.0, 1.0)
         self.spin_threshold_median.setValue(0.0)
@@ -1222,7 +1237,7 @@ class ConfigDialog(QDialog):
         self.method_params_layout.addRow(self.label_threshold_median, self.spin_threshold_median)
         
         # Parámetros para KMeans
-        self.label_threshold_kmeans = QLabel("Threshold KMeans:")
+        self.label_threshold_kmeans = QLabel("Umbral máscara")
         self.spin_threshold_kmeans = QDoubleSpinBox()
         self.spin_threshold_kmeans.setRange(0.0, 1.0)
         self.spin_threshold_kmeans.setValue(0.3)
@@ -1230,35 +1245,35 @@ class ConfigDialog(QDialog):
         self.spin_threshold_kmeans.setSingleStep(0.05)
         self.method_params_layout.addRow(self.label_threshold_kmeans, self.spin_threshold_kmeans)
         
-        self.label_number_clusters = QLabel("Number Clusters:")
+        self.label_number_clusters = QLabel("Número clusters")
         self.spin_number_clusters = QSpinBox()
         self.spin_number_clusters.setRange(2, 10)
         self.spin_number_clusters.setValue(3)
         self.method_params_layout.addRow(self.label_number_clusters, self.spin_number_clusters)
         
         # Parámetros para SoftVoting
-        self.label_threshold_softvoting = QLabel("Threshold SoftVoting:")
+        self.label_threshold_softvoting = QLabel("Umbral máscara")
         self.spin_threshold_softvoting = QDoubleSpinBox()
         self.spin_threshold_softvoting.setRange(0.0, 1.0)
         self.spin_threshold_softvoting.setValue(0.1)
         self.spin_threshold_softvoting.setDecimals(2)
         self.spin_threshold_softvoting.setSingleStep(0.05)
         self.method_params_layout.addRow(self.label_threshold_softvoting, self.spin_threshold_softvoting)
+
+        self.label_n_clusters_soft = QLabel("Número clusters")
+        self.spin_n_clusters_soft = QSpinBox()
+        self.spin_n_clusters_soft.setRange(3, 1000)
+        self.spin_n_clusters_soft.setValue(100)
+        self.spin_n_clusters_soft.setSingleStep(1)
+        self.method_params_layout.addRow(self.label_n_clusters_soft, self.spin_n_clusters_soft)
         
-        self.label_sigma = QLabel("Sigma:")
+        self.label_sigma = QLabel("Sigma")
         self.spin_sigma = QDoubleSpinBox()
         self.spin_sigma.setRange(1.0, 100.0)
         self.spin_sigma.setValue(10.0)
         self.spin_sigma.setDecimals(1)
         self.spin_sigma.setSingleStep(1.0)
         self.method_params_layout.addRow(self.label_sigma, self.spin_sigma)
-        
-        self.label_n_clusters_soft = QLabel("Numero Clusters:")
-        self.spin_n_clusters_soft = QSpinBox()
-        self.spin_n_clusters_soft.setRange(3, 1000)
-        self.spin_n_clusters_soft.setValue(100)
-        self.spin_n_clusters_soft.setSingleStep(1)
-        self.method_params_layout.addRow(self.label_n_clusters_soft, self.spin_n_clusters_soft)
         
         method_layout.addLayout(self.method_params_layout)
         method_group.setLayout(method_layout)
@@ -1268,7 +1283,7 @@ class ConfigDialog(QDialog):
         tab.setLayout(layout)
         
         # Mostrar solo los parámetros del método por defecto
-        self.onColorMethodChanged("Median")
+        self.onColorMethodChanged("Mediana")
         
         return tab
     
@@ -1300,15 +1315,15 @@ class ConfigDialog(QDialog):
         self.spin_n_clusters_soft.hide()
         
         # Mostrar solo los parámetros del método seleccionado
-        if method == "Median":
+        if method == "Mediana":
             self.label_threshold_median.show()
             self.spin_threshold_median.show()
-        elif method == "KMeans":
+        elif method == "K-Means":
             self.label_threshold_kmeans.show()
             self.spin_threshold_kmeans.show()
             self.label_number_clusters.show()
             self.spin_number_clusters.show()
-        elif method == "SoftVoting":
+        elif method == "Soft Voting":
             self.label_threshold_softvoting.show()
             self.spin_threshold_softvoting.show()
             self.label_sigma.show()
@@ -1323,8 +1338,9 @@ class ConfigDialog(QDialog):
         layout = QVBoxLayout()
         
         # Group Box "Imágenes Análisis"
-        analysis_group = QGroupBox("Imágenes Análisis")
+        analysis_group = QGroupBox("Imágenes")
         analysis_layout = QFormLayout()
+        analysis_layout.setHorizontalSpacing(20)
         
         # Resolution DPI
         self.spin_export_dpi = QSpinBox()
@@ -1332,7 +1348,7 @@ class ConfigDialog(QDialog):
         self.spin_export_dpi.setValue(300)
         self.spin_export_dpi.setSingleStep(50)
         self.spin_export_dpi.setSuffix(" dpi")
-        analysis_layout.addRow("Resolution DPI:", self.spin_export_dpi)
+        analysis_layout.addRow("Resolución DPI", self.spin_export_dpi)
         
         analysis_group.setLayout(analysis_layout)
         layout.addWidget(analysis_group)
@@ -1345,10 +1361,11 @@ class ConfigDialog(QDialog):
         # Save original image (CheckBox)
         check_save_widget = QWidget()
         check_save_layout = QFormLayout(check_save_widget)
+        check_save_layout.setHorizontalSpacing(20)
         check_save_layout.setContentsMargins(0, 0, 0, 0) 
         self.check_save_original_img = QCheckBox()
         self.check_save_original_img.setChecked(True)
-        check_save_layout.addRow("Guardar imagenes originales:", self.check_save_original_img)
+        check_save_layout.addRow("Guardar imagenes originales", self.check_save_original_img)
         results_layout.addWidget(check_save_widget)
 
         # Folder Resultados
@@ -1361,7 +1378,7 @@ class ConfigDialog(QDialog):
         folder_layout.addWidget(btn_results_folder)
         folder_layout.addWidget(self.label_results_folder, 1)
         
-        results_layout.addWidget(QLabel("Folder Resultados:"))
+        results_layout.addWidget(QLabel("Carpeta de resultados"))
         results_layout.addLayout(folder_layout)
         
         results_group.setLayout(results_layout)
@@ -1556,7 +1573,7 @@ class MainWindow(QMainWindow):
 
         # Panel lateral derecho
         self.side_panel = QStackedWidget()
-        self.side_panel.setFixedWidth(400)
+        self.side_panel.setFixedWidth(440)
         self.operationWidget = self.createSideOperationWidget()
         self.side_panel.addWidget(self.operationWidget)
 
@@ -1704,15 +1721,15 @@ class MainWindow(QMainWindow):
         group_layout_view.setSpacing(7)
         
         # Checkbox
-        self.checkbox_hide_mask = QCheckBox("Ocultar máscara")
-        self.checkbox_hide_mask.setChecked(False)
-        self.checkbox_hide_mask.stateChanged.connect(self.hideMask)
-        group_layout_view.addWidget(self.checkbox_hide_mask)
+        self.checkbox_show_mask = QCheckBox("Mostrar máscara")
+        self.checkbox_show_mask.setChecked(True)
+        self.checkbox_show_mask.stateChanged.connect(self.showMask)
+        group_layout_view.addWidget(self.checkbox_show_mask)
 
-        self.checkbox_hide_points = QCheckBox("Ocultar puntos")
-        self.checkbox_hide_points.setChecked(False)
-        self.checkbox_hide_points.stateChanged.connect(self.hidePoints)
-        group_layout_view.addWidget(self.checkbox_hide_points)
+        self.checkbox_show_points = QCheckBox("Mostrar puntos")
+        self.checkbox_show_points.setChecked(True)
+        self.checkbox_show_points.stateChanged.connect(self.showPoints)
+        group_layout_view.addWidget(self.checkbox_show_points)
 
         group_box_view.setLayout(group_layout_view)
         group_others_layout.addWidget(group_box_view)
@@ -1879,7 +1896,7 @@ class MainWindow(QMainWindow):
 
         self.input_id = QLineEdit()
         self.input_id.setPlaceholderText("Identificador")
-        self.input_id.setFixedHeight(30)
+        self.input_id.setFixedHeight(40)
         group_layout_3.addWidget(self.input_id)
 
         self.log_button = QPushButton("Guardar")
@@ -2018,15 +2035,15 @@ class MainWindow(QMainWindow):
         self.radio_buttons = QWidget()
         layout_radio_buttons = QHBoxLayout(self.radio_buttons)
 
-        self.radio_original = QRadioButton("Mostrar Original")
-        self.radio_original.setChecked(False)
-        self.radio_original.toggled.connect(self.showImgSelection)
-        layout_radio_buttons.addWidget(self.radio_original)
-
         self.radio_calibrated = QRadioButton("Mostrar Calibrada")
         self.radio_calibrated.setChecked(True)
         self.radio_calibrated.toggled.connect(self.showImgSelection)
         layout_radio_buttons.addWidget(self.radio_calibrated)
+
+        self.radio_original = QRadioButton("Mostrar Original")
+        self.radio_original.setChecked(False)
+        self.radio_original.toggled.connect(self.showImgSelection)
+        layout_radio_buttons.addWidget(self.radio_original)
 
         self.radio_buttons.hide()
         layout.addWidget(self.radio_buttons)
@@ -2060,7 +2077,7 @@ class MainWindow(QMainWindow):
     
     def selectPhotoCalibrationClicked(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar Imagen", "resources/calibration", "Archivos de Imagen (*.npy)"
+            self, "Seleccionar Imagen", "resources/calibration", "Archivos de Imagen (*.npy *.png)"
         )
         #"Seleccionar Imagen", "resources/calibration", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
         if path:
@@ -2114,24 +2131,24 @@ class MainWindow(QMainWindow):
         self.calibration.clearAllCalibration()
         self.restoreOperationWidget()
     
-    def hideMask(self, state) -> None:
+    def showMask(self, state) -> None:
         if state == 2:
-            self.viewer.showMask(False)
-        else:
             self.viewer.showMask(True)
-
-    def hidePoints(self, state) -> None:
-        if state == 2:
-            self.viewer.showAllPoints(False)
         else:
+            self.viewer.showMask(False)
+
+    def showPoints(self, state) -> None:
+        if state == 2:
             self.viewer.showAllPoints(True)
+        else:
+            self.viewer.showAllPoints(False)
     
     def updateColorDisplay(self) -> None:
         colors: dict =  self.processing.getTopColors()
         """Actualiza el widget de visualización de color"""
         if colors is not None:
-            self.checkbox_hide_mask.setChecked(False)
-            self.checkbox_hide_points.setChecked(False)
+            self.checkbox_show_mask.setChecked(True)
+            self.checkbox_show_points.setChecked(True)
             # Color 1
             r = int(colors["Color 1"]["RGB"][0])
             g = int(colors["Color 1"]["RGB"][1])
@@ -2367,6 +2384,9 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Formato no soportado",
                                     f"El formato {ext} no es válido para abrir.")
 
+            self.calibration.clearAllCalibration()
+            self.restoreOperationWidget()
+
             self.processing.loadImage(image, self.calibration)
             self.viewer.loadScene()
             self.viewer.clearVariables()
@@ -2395,12 +2415,12 @@ class MainWindow(QMainWindow):
                     self.group_box_others.show()
 
                 
-                if color_method == "Median":
+                if color_method == "Mediana":
                     self.processing.estimateColorsByWeightedMedian(min_weight_threshold=config['color']['method']['threshold_median'])
-                elif color_method == "KMeans":
+                elif color_method == "K-Means":
                     self.processing.estimateColorByKMeans(n_clusters=config['color']['method']['number_clusters'],
                                                         min_weight_threshold=config['color']['method']['threshold_kmeans'])
-                elif color_method == "SoftVoting":
+                elif color_method == "Soft Voting":
                     self.processing.estimateColorBySoftVoting(sigma=config['color']['method']['sigma'],
                                                             n_clusters=config['color']['method']['n_clusters_soft'],
                                                             min_weight_threshold=config['color']['method']['threshold_softvoting'])

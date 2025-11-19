@@ -28,7 +28,7 @@
             "database_file": "resources/pantone_databases/PANTONE Solid Coated-V4.json"
         },
         "method": {
-            "selected_method": "Median",
+            "selected_method": "Soft Voting",
             "threshold_median": 0.0,
             "threshold_kmeans": 0.3,
             "number_clusters": 3,
