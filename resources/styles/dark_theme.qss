@@ -294,11 +294,12 @@ QComboBox QAbstractItemView::item {
     padding-left: 10px;
     border-radius: 3px;
     margin: 2px;
-
 }
 
 QComboBox QAbstractItemView::item:hover {
-    background-color: #4a4a4a;
+    background-color: #308cc6;
+    border-radius: 3px;
+    border: 1px solid #707070;
 }
 
 QComboBox QAbstractItemView::item:selected {

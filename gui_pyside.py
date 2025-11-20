@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 from datetime import datetime
 from PySide6.QtCore import (Qt, QRectF)
 from PySide6.QtGui import (QPixmap, QImage, QPainter, QColor, QPalette)
@@ -13,7 +14,7 @@ import pandas as pd
 import pickle
 import torch
 import cv2
-from skimage.color import (deltaE_ciede2000, lab2rgb)
+from skimage.color import (deltaE_ciede2000, lab2rgb, rgb2lab)
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 
@@ -55,6 +56,111 @@ class Documentation():
         plt.subplots_adjust(wspace=0.0, hspace=0.0)
         plt.savefig(img_path, dpi=300, bbox_inches='tight')
         return img_path
+
+    @staticmethod
+    def getColorMethods(config_manager, processing) -> dict:
+        config = config_manager.getConfig()
+        results: dict = {}
+        start_time: float = 0.0
+        duration_time: float = 0.0
+        
+        # Method 1: Weighted Median
+        start_time = time.perf_counter()
+        processing.estimateColorsByWeightedMedian(min_weight_threshold=config['color']['method']['threshold_median'])
+        duration_time = (time.perf_counter()-start_time) * 1e3
+        results['Mediana Pesada'] = processing.getTopColors().copy()
+        results['Mediana Pesada']['Tiempo Ejecución (ms)'] = duration_time
+
+        # Method 2: K-Means
+        start_time = time.perf_counter()
+        processing.estimateColorByKMeans(n_clusters=config['color']['method']['number_clusters'],
+                                        min_weight_threshold=config['color']['method']['threshold_kmeans'])
+        duration_time = (time.perf_counter()-start_time) * 1e3
+        results['K-Means'] = processing.getTopColors().copy()
+        results['K-Means']['Tiempo Ejecución (ms)'] = duration_time
+
+        # Method 3: Soft Voting
+        start_time = time.perf_counter()
+        processing.estimateColorBySoftVoting(sigma=config['color']['method']['sigma'],
+                                            n_clusters=config['color']['method']['n_clusters_soft'],
+                                            min_weight_threshold=config['color']['method']['threshold_softvoting'])
+        duration_time = (time.perf_counter()-start_time) * 1e3
+        results['Soft Voting'] = processing.getTopColors().copy()
+        results['Soft Voting']['Tiempo Ejecución (ms)'] = duration_time
+
+        return results
+
+    def createColorMethodsComparationImage(self, config_manager, processing) -> str:
+        
+        results: dict = self.getColorMethods(config_manager, processing)
+
+        # Crear la figura con 3 columnas
+        fig, axes = plt.subplots(1, 3, figsize=(12, 3))
+        fig.subplots_adjust(wspace=0.001)
+        fig.suptitle('Comparación de Colores Predominantes', fontsize=16, fontweight='bold')
+        
+        methods: list = list(results.keys())
+        
+        for idx, method in enumerate(methods):
+            ax = axes[idx]
+            ax.axis('off')
+            
+            method_data = results[method]
+            duration = method_data['Tiempo Ejecución (ms)']
+            color_data = method_data['Color 1']
+            
+            # Extraer datos
+            pantone_name = color_data['Pantone Name']
+            lab_values = color_data['LAB']
+            rgb_values = color_data['RGB']
+            delta_e = color_data['ΔE00']
+            
+            # Título del método
+            ax.text(0.5, 0.95, method, ha='center', va='top', fontsize=13, 
+                    fontweight='bold', transform=ax.transAxes)
+            
+            # Duración
+            ax.text(0.5, 0.85, f'Tiempo de Ejecución: {duration:.1f} ms', ha='center', va='top', 
+                    fontsize=10, transform=ax.transAxes, style='italic')
+            
+            # Crear tabla
+            table_data: list = [
+                ['Pantone', pantone_name],
+                ['LAB', f'[{lab_values[0]:.5f}, {lab_values[1]:.2f}, {lab_values[2]:.2f}]'],
+                ['ΔE00', f'{delta_e:.2f}' if delta_e != -1 else 'N/A']
+            ]
+            
+            # Dibujar tabla
+            table = ax.table(cellText=table_data, cellLoc='left',
+                            loc='center', bbox=[0.05, 0.42, 0.9, 0.3],
+                            colWidths=[0.3, 0.7])
+            
+            table.auto_set_font_size(False)
+            table.set_fontsize(9)
+            
+            # Estilo de la tabla
+            for i in range(len(table_data)):
+                cell = table[(i, 0)]
+                cell.set_facecolor('#E8E8E8')
+                cell.set_text_props(weight='bold')
+                cell.set_height(0.1)
+                cell = table[(i, 1)]
+                cell.set_facecolor('white')
+                cell.set_height(0.1)
+            
+            # Tarjeta de color RGB (ocupando las 2 columnas)
+            rgb_normalized = rgb_values / 255.0
+            color_box = plt.Rectangle((0.05, 0.05), 0.9, 0.32, 
+                                    facecolor=rgb_normalized, 
+                                    edgecolor='black', linewidth=1,
+                                    transform=ax.transAxes)
+            ax.add_patch(color_box)
+        
+        #plt.tight_layout()
+        path = 'resources/exported_images/color_comparation_image.png'
+        plt.savefig(path, dpi=150, bbox_inches='tight')
+
+        return path
     
     @staticmethod
     def createHistogramImage(histograms):
@@ -100,6 +206,31 @@ class Calibration():
         self.color_checker_raw_image = None
         self.color_patches = None
         self.img_draw = None
+        self.measures_delta_e00 = {}
+        self.reference_LABs = np.array([[37.986, 13.555, 14.059],
+                                        [65.711, 18.13, 17.81],
+                                        [49.927, -4.88, -21.925],
+                                        [43.139, -13.095, 21.905],
+                                        [55.112, 8.844, -25.399],
+                                        [70.719, -33.397, -0.199],
+                                        [62.661, 36.067, 57.096],
+                                        [40.02, 10.41, -45.964],
+                                        [51.124, 48.239, 16.248],
+                                        [30.325, 22.976, -21.587],
+                                        [72.532, -23.709, 57.255],
+                                        [71.941, 19.363, 67.857],
+                                        [28.778, 14.179, -50.297],
+                                        [55.261, -38.342, 31.37],
+                                        [42.101, 53.378, 28.19],
+                                        [81.733, 4.039, 79.819],
+                                        [51.935, 49.986, -14.574],
+                                        [51.038, -28.631, -28.638],
+                                        [96.539, -0.425, 1.186],
+                                        [81.257, -0.638, -0.335],
+                                        [66.766, -0.734, -0.504],
+                                        [50.867, -0.153, -0.27],
+                                        [35.656, -0.421, -1.231],
+                                        [20.461, -0.079, -0.973]])
 
     def getParamsPath(self) -> str:
         return self.params_path
@@ -191,7 +322,21 @@ class Calibration():
         
         # Run the model
         model.run()
+
+        # Convertir parches detectados a LAB
+        patches_rgb = color_patches.reshape(24, 3)
+        detected_lab = rgb2lab(patches_rgb[np.newaxis, :, :]).squeeze()
+        delta_e00_values = deltaE_ciede2000(self.reference_LABs, detected_lab)
+
+        # Calcular promedio
+        self.measures_delta_e00["mean"] = np.mean(delta_e00_values)
+        self.measures_delta_e00["max"] = np.max(delta_e00_values)
+        self.measures_delta_e00["min"] = np.min(delta_e00_values)
+
         return model
+
+    def getMeasuresDeltaE00(self) -> float:
+        return self.measures_delta_e00
 
     def clearAllCalibration(self) -> None:
         self.color_checker_raw_image = None
@@ -527,25 +672,6 @@ class ImageProcessing():
                                             "RGB": rgb,
                                             "ΔE00": -1
                                             }
-
-    @staticmethod
-    def computeDeltaE1976(pixels_lab: np.ndarray, 
-                            pantones_lab: np.ndarray) -> np.ndarray:
-        """
-        Calcula Delta E 1976 (distancia euclidiana en LAB) vectorizada.
-        Extremadamente rápido (~1000x más rápido que CIEDE2000).
-        
-        Args:
-            pixels_lab: (n_pixels, 3)
-            pantones_lab: (n_pantones, 3)
-        
-        Returns:
-            distances: (n_pixels, n_pantones) - distancias euclidianas
-        """
-        # Broadcasting: (n_pixels, 1, 3) - (1, n_pantones, 3)
-        diff = pixels_lab[:, np.newaxis, :] - pantones_lab[np.newaxis, :, :]
-        distances = np.sqrt(np.sum(diff**2, axis=2))
-        return distances
     
     @staticmethod
     def fromRGBtoLAB(image_rgb: np.ndarray) -> np.ndarray:
@@ -1056,11 +1182,15 @@ class ConfigDialog(QDialog):
         
         # Calibration params file path
         params_layout = QHBoxLayout()
+        params_layout.setSpacing(20)
         btn_calib_params = QPushButton("Seleccionar Parámetros")
         btn_calib_params.clicked.connect(self.selectCalibParamsPath)
+
+
         self.label_calib_params_path = QLabel("No seleccionado")
         self.label_calib_params_path.setWordWrap(True)
         self.label_calib_params_path.setStyleSheet("font-size: 11px; color: #a0a0a0;")
+        
         params_layout.addWidget(btn_calib_params)
         params_layout.addWidget(self.label_calib_params_path, 1)
         
@@ -1196,6 +1326,7 @@ class ConfigDialog(QDialog):
         
         # Pantone Database File
         pantone_file_layout = QHBoxLayout()
+        pantone_file_layout.setSpacing(20)
         btn_pantone_file = QPushButton("Seleccionar Base de Datos")
         btn_pantone_file.clicked.connect(self.selectPantoneDatabase)
         self.label_pantone_path = QLabel("No seleccionado")
@@ -1370,6 +1501,7 @@ class ConfigDialog(QDialog):
 
         # Folder Resultados
         folder_layout = QHBoxLayout()
+        folder_layout.setSpacing(20)
         btn_results_folder = QPushButton("Seleccionar Carpeta")
         btn_results_folder.clicked.connect(self.selectResultsFolder)
         self.label_results_folder = QLabel("No seleccionado")
@@ -1588,7 +1720,9 @@ class MainWindow(QMainWindow):
         action_extract_img.triggered.connect(self.saveImage)
         action_extract_filter_comparison = submenu_extract.addAction("Comparación filtro guiado")
         action_extract_filter_comparison.triggered.connect(self.exportFeatheredComparisonImage)
-        action_extract_histogram = submenu_extract.addAction("Histograma de color")
+        action_extract_color_comparison = submenu_extract.addAction("Comparación método de color")
+        action_extract_color_comparison.triggered.connect(self.exportColorComparisonImage)
+        action_extract_histogram = submenu_extract.addAction("Histograma de color segmento")
         action_extract_histogram.triggered.connect(self.exportHistogram)
 
         action_settings = menu_file.addAction("Configuración")
@@ -1923,7 +2057,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(widget)
         layout.setAlignment(Qt.AlignTop)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
         # ------------ Group Box - Load Image ------------
         group_box_load_image = QGroupBox("Tabla Macbeth ColorChecker")
@@ -1952,14 +2086,14 @@ class MainWindow(QMainWindow):
 
         button_take_photo = QPushButton("Capturar")
         button_take_photo.clicked.connect(self.takePhotoCalibrationClicked)
-        button_take_photo.setFixedHeight(40)
+        button_take_photo.setFixedHeight(37)
         layout_take_photo.addWidget(button_take_photo)
 
         layout_load_image.addWidget(group_box_take_photo)
 
         # ------ o
         label_or = QLabel("-   o   -")
-        label_or.setStyleSheet("color: #e0e0e0; font-size: 13px; font-weight: normal;")
+        label_or.setStyleSheet("color: #e0e0e0; font-size: 13px; font-weight: normal; padding: 0px 10px;")
         label_or.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         layout_load_image.addWidget(label_or)
@@ -1970,12 +2104,12 @@ class MainWindow(QMainWindow):
         layout_select_photo.setContentsMargins(13, 15, 13, 10)
         layout_select_photo.setSpacing(7)
 
-        label_select_photo = QLabel("Desde el explorador de archivos, carga la foto de la tabla")
+        label_select_photo = QLabel("Desde el explorador de archivos, carga la foto")
         layout_select_photo.addWidget(label_select_photo)
 
         button_select_photo = QPushButton("Cargar")
         button_select_photo.clicked.connect(self.selectPhotoCalibrationClicked)
-        button_select_photo.setFixedHeight(40)
+        button_select_photo.setFixedHeight(37)
         layout_select_photo.addWidget(button_select_photo)
 
         layout_load_image.addWidget(group_box_select_photo)
@@ -2000,7 +2134,7 @@ class MainWindow(QMainWindow):
 
         button_detect = QPushButton("Detectar")
         button_detect.clicked.connect(self.detectColorCheckerClicked)
-        button_detect.setFixedHeight(40)
+        button_detect.setFixedHeight(37)
         layout_detect.addWidget(button_detect)
 
         layout_params.addWidget(group_box_detect)
@@ -2022,7 +2156,7 @@ class MainWindow(QMainWindow):
 
         button_save_apply = QPushButton("Guardar y Aplicar")
         button_save_apply.clicked.connect(self.saveAndApplyClicked)
-        button_save_apply.setFixedHeight(40)
+        button_save_apply.setFixedHeight(37)
         layout_save_apply.addWidget(button_save_apply)
 
         self.group_box_save_apply.hide()
@@ -2048,11 +2182,17 @@ class MainWindow(QMainWindow):
         self.radio_buttons.hide()
         layout.addWidget(self.radio_buttons)
 
+        # ------------ Delta Labels ------------
+        self.label_measures_delta = QLabel('<span style="text-decoration: overline;">ΔE00</span>')
+        self.label_measures_delta.setStyleSheet("padding: 0px 10px 8px 10px;")
+        self.label_measures_delta.hide()
+        layout.addWidget(self.label_measures_delta)
+
         # ------------ Cancel Button ------------
-        line2 = QFrame()
-        line2.setFrameShape(QFrame.NoFrame)
-        line2.setFixedHeight(2)
-        layout.addWidget(line2)
+        #line2 = QFrame()
+        #line2.setFrameShape(QFrame.NoFrame)
+        #line2.setFixedHeight(2)
+        #layout.addWidget(line2)
 
         self.button_finish = QPushButton("Cancelar")
         self.final_status_calibration = False
@@ -2086,6 +2226,11 @@ class MainWindow(QMainWindow):
             self.viewer.clearVariables()
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.calibration.getRawImage()))
             self.group_box_params.show()
+            self.group_box_save_apply.hide()
+            self.radio_buttons.hide()
+            self.label_measures_delta.hide()
+            self.button_finish.setText("Cancelar")
+            self.final_status_calibration = False
 
     def detectColorCheckerClicked(self) -> None:
         self.calibration.detectColorChecker(drawPatches=True)
@@ -2113,6 +2258,14 @@ class MainWindow(QMainWindow):
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(img))
             # Update GUI
             self.radio_buttons.show()
+            measures_delta_e00: dict = self.calibration.getMeasuresDeltaE00()
+            label: str = f'<span style="text-decoration: overline;">ΔE00</span> : {measures_delta_e00["mean"]:.2f}' \
+                        f'\u00A0\u00A0\u00A0\u00A0\u00A0|\u00A0\u00A0\u00A0\u00A0\u00A0' \
+                        f'min(ΔE00) : {measures_delta_e00["min"]:.2f}' \
+                        f'\u00A0\u00A0\u00A0\u00A0\u00A0|\u00A0\u00A0\u00A0\u00A0\u00A0' \
+                        f'max(ΔE00) : {measures_delta_e00["max"]:.2f}'
+            self.label_measures_delta.setText(label)
+            self.label_measures_delta.show()
             self.button_finish.setText("Finalizar")
             
     def finishCalibrationClicked(self) -> None:
@@ -2414,7 +2567,6 @@ class MainWindow(QMainWindow):
                 if not self.group_box_others.isVisible():
                     self.group_box_others.show()
 
-                
                 if color_method == "Mediana":
                     self.processing.estimateColorsByWeightedMedian(min_weight_threshold=config['color']['method']['threshold_median'])
                 elif color_method == "K-Means":
@@ -2451,6 +2603,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, 
                                 "Mascara no encontrada", 
                                 "Por favor, correr la segmentación antes de exportar la imagen.")
+
+    def exportColorComparisonImage(self) -> None:
+        if self.doc:
+            img_path = self.doc.createColorMethodsComparationImage(self.config_manager, self.processing)
+            QMessageBox.information(self, 
+                                "Imagen exportada exitosamente", 
+                                f"Guardada como {img_path}")
+        else:
+            QMessageBox.warning(self, 
+                                "Mascara no encontrada", 
+                                "Por favor, correr la segmentación antes de exportar la imagen.")
+
 
     def exportHistogram(self) -> None:
         if self.doc and self.processing:
