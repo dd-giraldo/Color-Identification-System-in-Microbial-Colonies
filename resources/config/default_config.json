@@ -1,13 +1,25 @@
 {
     "camera": {
-        "auto_gain": 0,
-        "preset_gain": "Medium",
-        "exposition_time": 18000,
-        "description": "Parámetros de la cámara"
+        "tuning":{
+            "contrast": 0.9,
+            "saturation": 0.9,
+            "brightness": 0.0,
+            "sharpness": 1.0
+        },
+        "AEC":{
+            "aec": 0,
+            "exposition_time": 9000,
+            "gain": 1.0
+        },
+        "AWB":{
+            "awb": 0,
+            "awb_mode": 5,
+            "red_gain": 1.7,
+            "blue_gain": 1.4
+        }
     },
     "calibration": {
-        "calibration_params_path": "resources/calibration/default_calibration_params.pickle",
-        "description": "Rutas de calibración"
+        "calibration_params_path": "resources/calibration/default_calibration_params.pickle"
     },
     "segmentation": {
         "scene": {
@@ -20,8 +32,7 @@
         "guided_filter": {
             "radius": 2,
             "epsilon": 0.3
-        },
-        "description": "Parámetros de segmentación"
+        }
     },
     "color": {
         "pantone": {
@@ -35,8 +46,7 @@
             "threshold_softvoting": 0.1,
             "sigma": 10.0,
             "n_clusters_soft": 100
-        },
-        "description": "Parámetros de estimación de color"
+        }
     },
     "export": {
         "analysis_images": {
@@ -44,8 +54,8 @@
         },
         "results": {
             "folder_path": "results",
+            "save_calibrated_img": 1,
             "save_original_img": 1
-        },
-        "description": "Parámetros de exportación"
+        }
     }
 }

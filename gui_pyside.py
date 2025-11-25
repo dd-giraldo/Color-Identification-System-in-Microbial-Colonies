@@ -2,13 +2,15 @@ import sys
 import os
 import time
 from datetime import datetime
-from PySide6.QtCore import (Qt, QRectF)
+import gc
+from PySide6.QtCore import (Qt, QRectF, QTimer)
 from PySide6.QtGui import (QPixmap, QImage, QPainter, QColor, QPalette)
 from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout, QListWidget, QGraphicsScene, 
                                 QGraphicsView, QFileDialog, QColorDialog, QGraphicsPixmapItem, QGraphicsEllipseItem, 
                                 QPushButton, QMessageBox, QFrame, QCheckBox, QRadioButton, QGroupBox, QLabel, QLineEdit, QTabWidget,
                                 QSpinBox, QDoubleSpinBox, QFormLayout, QDialog, QComboBox, QStackedWidget)
 
+from picamera2 import Picamera2
 import numpy as np
 import pandas as pd
 import pickle
@@ -22,11 +24,117 @@ import json
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 
+class Camera():
+    def __init__(self):
+        self.controls = {}
+        self.picam2 = Picamera2()
+        self.capture_config = self.picam2.create_still_configuration(
+                                main={"size": (3280, 2464)}
+                            )
+        self.preview_config_seg = self.picam2.create_preview_configuration(
+                                main={"size": (720, 720)},
+                                sensor={"output_size": (3280, 2464)}
+                            )
+        self.preview_config_cal = self.picam2.create_preview_configuration(
+                                main={"size": (720, 540)},
+                                sensor={"output_size": (3280, 2464)}
+                            )
+
+        # Flag para saber si la cámara está en modo preview
+        self.is_preview_mode = False
+        
+    def getIsPreviewFlag(self) -> bool:
+        return self.is_preview_mode
+
+    def setControls(self, config):
+        self.controls = {}
+        self.controls = {
+            "AeEnable": config['camera']['AEC']['aec'],
+            "AwbEnable": config['camera']['AWB']['awb'],
+            "Contrast": config['camera']['tuning']['contrast'],
+            "Saturation": config['camera']['tuning']['saturation'],
+            "Brightness": config['camera']['tuning']['brightness'],
+            "Sharpness": config['camera']['tuning']['sharpness']
+        }
+
+        if not config['camera']['AEC']['aec']:
+            self.controls["ExposureTime"] = config['camera']['AEC']['exposition_time']
+            self.controls["AnalogueGain"] = config['camera']['AEC']['gain']
+        
+        if config['camera']['AWB']['awb']:
+            self.controls["AwbMode"] = config['camera']['AWB']['awb_mode']
+        else:
+            self.controls["ColourGains"] = (config['camera']['AWB']['red_gain'],
+                                            config['camera']['AWB']['blue_gain'])
+
+        self.picam2.set_controls(self.controls)
+
+    def startPreview(self, preview_type='segmentation'):
+        """Inicia el modo preview con configuración de baja resolución'"""
+        if not self.picam2.started:
+            # Configurar para preview de baja resolución
+            if preview_type == 'segmentation':
+                self.picam2.configure(self.preview_config_seg)
+            else:
+                self.picam2.configure(self.preview_config_cal)
+                
+            self.picam2.set_controls(self.controls)
+            self.picam2.start()
+            self.is_preview_mode = True
+    
+    def stopPreview(self):
+        if self.picam2.started:
+            """Detiene el modo preview"""
+            self.picam2.stop()
+            self.is_preview_mode = False
+    
+    def getPreviewFrame(self, preview_type='segmentation'):
+        """Captura un frame del preview
+        preview_type: 'segmentation' (2464x2464 centrado) o 'calibration' (3280x2464)"""
+
+        if not self.picam2.started:
+            return None
+        
+        # Capturar frame de baja resolución
+        frame = self.picam2.capture_array()
+        
+        return frame
+
+    def capture(self, n_captures=10):
+        self.picam2.configure(self.capture_config)
+        self.picam2.set_controls(self.controls)
+        
+        # Capturar imagen
+        self.picam2.start()
+        time.sleep(1)
+        first_img = self.picam2.capture_array()
+        sum_cum = np.zeros(first_img.shape, dtype=np.float32)
+        sum_cum += first_img
+
+        for i in range(1, n_captures):
+            img = self.picam2.capture_array()
+            sum_cum += img
+        
+        self.picam2.stop()
+
+        mean_rgb_img = (sum_cum / n_captures).astype(np.uint8)
+
+        return mean_rgb_img
+
 
 class Documentation():
     def __init__(self) -> None:
+        self.dpi = 300
+        self.is_segmented_flag = False
         self.list_r = [2, 4, 8, 12]
         self.list_eps = [0.1**2, 0.2**2, 0.3**2, 0.4**2]
+        self.export_folder = "resources/exported_images"
+    
+    def getIsSegmentedFlag(self):
+        return self.is_segmented_flag
+    
+    def setIsSegmentedFlag(self, value):
+        self.is_segmented_flag = value
 
     def createGuidedFilterComparisonImage(self, processing):
         rows: int = len(self.list_r)
@@ -52,9 +160,11 @@ class Documentation():
                 
                 if j == 0:
                     ax.set_ylabel(f'r = {r}', fontsize=12, rotation=90, labelpad=7, ha='center', va='center')
-        img_path = "resources/exported_images/filter_comparison_image.png"
+        
+        os.makedirs(self.export_folder, exist_ok=True)
+        img_path = os.path.join(self.export_folder, "filter_comparison.png")
         plt.subplots_adjust(wspace=0.0, hspace=0.0)
-        plt.savefig(img_path, dpi=300, bbox_inches='tight')
+        plt.savefig(img_path, dpi=self.dpi, bbox_inches='tight')
         return img_path
 
     @staticmethod
@@ -156,10 +266,10 @@ class Documentation():
                                     transform=ax.transAxes)
             ax.add_patch(color_box)
         
-        #plt.tight_layout()
-        path = 'resources/exported_images/color_comparation_image.png'
-        plt.savefig(path, dpi=150, bbox_inches='tight')
-
+        os.makedirs(self.export_folder, exist_ok=True)
+        img_path = os.path.join(self.export_folder, "color_comparation.png")
+        plt.savefig(img_path, dpi=self.dpi, bbox_inches='tight')
+        plt.close(fig)
         return path
     
     @staticmethod
@@ -183,20 +293,12 @@ class Documentation():
         ax.grid(True, linestyle='--', alpha=0.6)
         ax.set_xlim([0, 256]) # El rango de intensidad de color es de 0 a 255
 
-        img_path = "resources/exported_images/histogram_image.png"
+        os.makedirs(self.export_folder, exist_ok=True)
+        img_path = os.path.join(self.export_folder, "segment_color_histogram.png")
         plt.tight_layout()
-        plt.savefig(img_path, dpi=300, bbox_inches='tight')
-        
+        plt.savefig(img_path, dpi=self.dpi, bbox_inches='tight')
+        plt.close(fig)
         return img_path
-
-    def setListR(self, radius) -> None:
-        self.list_r = radius
-    def setListEPS(self, eps) -> None:
-        self.list_eps = eps
-    def getListR(self) -> list[int]:
-        return self.list_r
-    def getListEPS(self) -> list[float]:
-        return self.list_eps
 
 
 class Calibration():
@@ -207,6 +309,7 @@ class Calibration():
         self.color_patches = None
         self.img_draw = None
         self.measures_delta_e00 = {}
+        self.model = None
         self.reference_LABs = np.array([[37.986, 13.555, 14.059],
                                         [65.711, 18.13, 17.81],
                                         [49.927, -4.88, -21.925],
@@ -235,15 +338,8 @@ class Calibration():
     def getParamsPath(self) -> str:
         return self.params_path
     
-    def loadRawImage(self, file_path: str) -> None:
-        ext: str = os.path.splitext(file_path)[1].lower()
-        if ext == ".png":
-            self.color_checker_raw_image = cv2.cvtColor(cv2.imread(file_path), cv2.COLOR_BGR2RGB)
-        elif ext == ".npy":
-            self.color_checker_raw_image = np.load(file_path)
-        else:
-            QMessageBox.warning(self, "Formato no soportado",
-                                f"El formato {ext} no es válido para abrir.")
+    def loadRawImage(self, img) -> None:
+        self.color_checker_raw_image = img
         
     def getRawImage(self):
         return self.color_checker_raw_image
@@ -280,6 +376,18 @@ class Calibration():
             chartsRGB = checker.getChartsRGB()
             width, height = chartsRGB.shape[:2]
             self.color_patches = chartsRGB[:, 1].copy().reshape(int(width / 3), 1, 3) / 255.0
+
+            # Convertir parches detectados a LAB
+            patches_rgb = self.color_patches.reshape(24, 3)
+            detected_lab = rgb2lab(patches_rgb[np.newaxis, :, :]).squeeze()
+            delta_e00_values = deltaE_ciede2000(self.reference_LABs, detected_lab)
+
+            # Calcular promedio
+            self.measures_delta_e00["mean"] = np.mean(delta_e00_values)
+            self.measures_delta_e00["min"] = np.min(delta_e00_values)
+            self.measures_delta_e00["max"] = np.max(delta_e00_values)
+            self.measures_delta_e00["values"] = delta_e00_values
+            
     
     def setPathcalibrationParams(self, file_path) -> None:
         self.params_path = file_path
@@ -292,48 +400,39 @@ class Calibration():
         with open(self.params_path, 'wb') as f:
             pickle.dump(params, f)
     
-    def reconstructModelFromParams(self):
-        # Load the color patches and configuration from a pickle file
-        try:
-            with open(self.params_path, 'rb') as f:
-                params = pickle.load(f)
-        except FileNotFoundError:
-            self.params_path = "resources/calibration/default_calibration_params.pickle"
-            self.config.setValue("calibration",
-                                "calibration_params_path",
-                                "resources/calibration/default_calibration_params.pickle")
-            with open(self.params_path, 'rb') as f:
-                params = pickle.load(f)
-        except Exception as e:
-            print("Error")
+    def reconstructModel(self, fromParamsFile: bool = False):
+        if fromParamsFile:
+            # Load the color patches and configuration from a pickle file
+            try:
+                with open(self.params_path, 'rb') as f:
+                    params = pickle.load(f)
+            except FileNotFoundError:
+                self.params_path = "resources/calibration/default_calibration_params.pickle"
+                self.config.setValue("calibration",
+                                    "calibration_params_path",
+                                    "resources/calibration/default_calibration_params.pickle")
+                with open(self.params_path, 'rb') as f:
+                    params = pickle.load(f)
+            except Exception as e:
+                print("Error")
 
-        # Reconstruct the color correction model from parameters
-        color_patches = params['color_patches']
-        model = cv2.ccm_ColorCorrectionModel(color_patches, cv2.ccm.COLORCHECKER_Macbeth)
+            # Reconstruct the color correction model from parameters
+            self.color_patches = params['color_patches']
+
+        self.model = cv2.ccm_ColorCorrectionModel(self.color_patches, cv2.ccm.COLORCHECKER_Macbeth)
         
         # Configure the model
-        model.setColorSpace(cv2.ccm.COLOR_SPACE_sRGB)
-        model.setCCM_TYPE(cv2.ccm.CCM_3x3)
-        model.setDistance(cv2.ccm.DISTANCE_CIE2000)
-        model.setLinear(cv2.ccm.LINEARIZATION_GAMMA)
-        model.setLinearGamma(2.2)
-        model.setLinearDegree(3)
-        model.setSaturatedThreshold(0, 0.98)
+        self.model.setColorSpace(cv2.ccm.COLOR_SPACE_sRGB)
+        self.model.setCCM_TYPE(cv2.ccm.CCM_3x3)
+        self.model.setDistance(cv2.ccm.DISTANCE_CIE2000)
+        self.model.setLinear(cv2.ccm.LINEARIZATION_GAMMA)
+        self.model.setLinearGamma(2.2)
+        self.model.setLinearDegree(3)
+        self.model.setSaturatedThreshold(0, 0.98)
         
         # Run the model
-        model.run()
+        self.model.run()
 
-        # Convertir parches detectados a LAB
-        patches_rgb = color_patches.reshape(24, 3)
-        detected_lab = rgb2lab(patches_rgb[np.newaxis, :, :]).squeeze()
-        delta_e00_values = deltaE_ciede2000(self.reference_LABs, detected_lab)
-
-        # Calcular promedio
-        self.measures_delta_e00["mean"] = np.mean(delta_e00_values)
-        self.measures_delta_e00["max"] = np.max(delta_e00_values)
-        self.measures_delta_e00["min"] = np.min(delta_e00_values)
-
-        return model
 
     def getMeasuresDeltaE00(self) -> float:
         return self.measures_delta_e00
@@ -342,14 +441,14 @@ class Calibration():
         self.color_checker_raw_image = None
         self.color_patches = None
         self.img_draw = None
+        self.model = None
     
-    @staticmethod
-    def applyColorCorrection(image, model):
+    def applyColorCorrection(self, image):
         # Apply color correction to the image
         image = image.astype(np.float64) / 255.0
 
         # Perform inference with the model
-        calibrated_image = model.infer(image)
+        calibrated_image = self.model.infer(image)
         out_ = calibrated_image * 255
         out_[out_ < 0] = 0
         out_[out_ > 255] = 255
@@ -395,8 +494,8 @@ class ImageProcessing():
     # Methods
     def loadImage(self, image, calibration) -> None:
         self.original_image = self.cropSquare(image)
-        model = calibration.reconstructModelFromParams()
-        self.calibrated_image = calibration.applyColorCorrection(self.original_image, model)
+        calibration.reconstructModel(fromParamsFile=True)
+        self.calibrated_image = calibration.applyColorCorrection(self.original_image)
         self.original_image_size = self.calibrated_image.shape[:2]
         self.scaled_image = self.decimateImage(self.calibrated_image)
         self.predictor.set_image(self.scaled_image)
@@ -727,7 +826,7 @@ class ImageProcessing():
 
 class Viewer(QGraphicsView):
     # Initialization
-    def __init__(self, parent=None) -> None:
+    def __init__(self, parent=None, camera=None) -> None:
         super().__init__(parent)
         self.scene = None
         self.pixmap_item = None
@@ -739,6 +838,8 @@ class Viewer(QGraphicsView):
         self.point_coordinates = []
         self.point_labels = []
         self.marker_items = []
+        self.is_calibration = False
+        self.camera = camera
 
         self.setRenderHint(QPainter.Antialiasing) # Smooths the edges of drawn points
         self.setRenderHint(QPainter.SmoothPixmapTransform) # Smooths the image when scaling it
@@ -748,11 +849,20 @@ class Viewer(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff) # Hides vertical scroll bar
         self.viewport().setCursor(Qt.ArrowCursor) # Changes cursor shape
 
+        # Variables para preview
+        self.preview_item = None
+
     # Methods
     
     def loadScene(self):
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
+
+    def setIsCalibrationFlag(self, value: bool):
+        self.is_calibration = value
+
+    def setIsPreviewFlag(self, value: bool):
+        self.is_preview = value
 
     def clearVariables(self) -> None:
         self.mask_item = None
@@ -771,13 +881,19 @@ class Viewer(QGraphicsView):
         self.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
         self.scene_rect = self.scene.itemsBoundingRect()
     
+    def clearPreview(self):
+        """Limpia el preview"""
+        if self.preview_item:
+            self.scene.removeItem(self.preview_item)
+            self.preview_item = None
+    
     def addOverlay(self, pixmap: QPixmap) -> None:
         """
         Añade un QPixmap como una capa superpuesta sobre la imagen principal.
         Si ya existe una capa anterior, la elimina primero.
         """
         # Si ya había una máscara, la eliminamos de la escena
-        if self.mask_item is not None:
+        if self.mask_item:
             self.scene.removeItem(self.mask_item)
 
         # Creamos el nuevo item para la máscara
@@ -829,96 +945,90 @@ class Viewer(QGraphicsView):
             self.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
     
     def wheelEvent(self, event) -> None:
-        factor_zoom = 1.1
-        if event.angleDelta().y() > 0:
-            # Zoom in
-            factor = factor_zoom
-        else:
-            # Zoom out
-            visible_rect = self.mapToScene(self.viewport().rect()).boundingRect()
-            if visible_rect.width() > self.scene_rect.width() or visible_rect.height() > self.scene_rect.height():
-                self.fitInView(self.scene_rect, Qt.KeepAspectRatio)
-                return
-            factor = 1 / factor_zoom
+        if not self.camera.getIsPreviewFlag():
+            factor_zoom = 1.1
+            if event.angleDelta().y() > 0:
+                # Zoom in
+                factor = factor_zoom
+            else:
+                # Zoom out
+                visible_rect = self.mapToScene(self.viewport().rect()).boundingRect()
+                if visible_rect.width() > self.scene_rect.width() or visible_rect.height() > self.scene_rect.height():
+                    self.fitInView(self.scene_rect, Qt.KeepAspectRatio)
+                    return
+                factor = 1 / factor_zoom
 
-        self.scale(factor, factor)
+            self.scale(factor, factor)
     
     def enterEvent(self, event) -> None:
         self.viewport().setCursor(Qt.ArrowCursor)
         super().enterEvent(event)
     
     def mouseMoveEvent(self, event) -> None:
-        # Si el botón izquierdo está presionado y tenemos una posición de inicio...
-        if event.buttons() == Qt.LeftButton and self.click_pos:
-            # Calculamos la distancia desde el punto de inicio
-            # manhattanLength es una forma rápida de medir la distancia
-            dist = (event.position() - self.click_pos).manhattanLength()
-            # QApplication.startDragDistance() es la distancia recomendada por el SO
-            # para considerar algo como un arrastre
-            if dist > QApplication.startDragDistance():
-                self.is_panning = True
-        
-        # Pasamos el evento a la clase base para que el paneo funcione
-        super().mouseMoveEvent(event)
+        if not self.camera.getIsPreviewFlag():
+            # Si el botón izquierdo está presionado y tenemos una posición de inicio...
+            if event.buttons() == Qt.LeftButton and self.click_pos:
+                # Calculamos la distancia desde el punto de inicio
+                # manhattanLength es una forma rápida de medir la distancia
+                dist = (event.position() - self.click_pos).manhattanLength()
+                # QApplication.startDragDistance() es la distancia recomendada por el SO
+                # para considerar algo como un arrastre
+                if dist > QApplication.startDragDistance():
+                    self.is_panning = True
+            
+            # Pasamos el evento a la clase base para que el paneo funcione
+            super().mouseMoveEvent(event)
+
+    def addPoint(self, x: float, y: float, label: int):
+        self.point_coordinates.append((x, y))
+        self.point_labels.append(label)
+        color = QColor(0, 255, 0) if label == 1 else QColor(255, 0, 0)
+        # Dibujamos un círculo rojo para marcar el punto
+        radius = (int(self.scene_rect.width())>>8) + self.min_markpoint_radius # Escalar punto a dibujar
+        marker = QGraphicsEllipseItem(
+            x - radius,
+            y - radius,
+            radius * 2,
+            radius * 2,
+        )
+        marker.setBrush(color)
+        marker.setPen(Qt.NoPen)
+        # Aseguramos que el marcador se dibuje encima de la foto
+        marker.setZValue(1) 
+        self.scene.addItem(marker)
+        self.marker_items.append(marker)
 
     def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.LeftButton and not self.is_panning:
-            if self.pixmap_item:
-                coordinates = self.mapToScene(event.position().toPoint()).toPoint()
-                self.point_coordinates.append((coordinates.x(), coordinates.y()))
-                self.point_labels.append(1)
-                # Verificamos si el clic fue DENTRO de la imagen
-                if self.pixmap_item.contains(coordinates):
-                    # Dibujamos un círculo rojo para marcar el punto
-                    radius = (int(self.scene_rect.width())>>8) + self.min_markpoint_radius # Escalar punto a dibujar
-                    marker = QGraphicsEllipseItem(
-                        coordinates.x() - radius,
-                        coordinates.y() - radius,
-                        radius * 2,
-                        radius * 2,
-                    )
-                    marker.setBrush(Qt.green)
-                    marker.setPen(Qt.NoPen)
-                    # Aseguramos que el marcador se dibuje encima de la foto
-                    marker.setZValue(1) 
-                    self.scene.addItem(marker)
-                    self.marker_items.append(marker)
-        # Reseteamos el estado para el próximo clic
-        self.press_pos = None
-        self.is_panning = False
+        if (not self.is_calibration) and (not self.camera.getIsPreviewFlag()):
+            if event.button() == Qt.LeftButton and not self.is_panning:
+                if self.pixmap_item:
+                    coordinates = self.mapToScene(event.position().toPoint()).toPoint()
+                    # Verificamos si el clic fue DENTRO de la imagen
+                    if self.pixmap_item.contains(coordinates):
+                        self.addPoint(x=coordinates.x(), y=coordinates.y(), label=1)
+                        
+            # Reseteamos el estado para el próximo clic
+            self.press_pos = None
+            self.is_panning = False
         
-        # Pasamos el evento a la clase base para que se complete la lógica del drag
-        super().mouseReleaseEvent(event)
-        self.viewport().setCursor(Qt.ArrowCursor)
+            # Pasamos el evento a la clase base para que se complete la lógica del drag
+            super().mouseReleaseEvent(event)
+            self.viewport().setCursor(Qt.ArrowCursor)
     
     def mousePressEvent(self, event) -> None:
-        # Solo nos interesa el clic izquierdo p ara iniciar la lógica
-        if event.button() == Qt.LeftButton and self.pixmap_item:
-            self.click_pos = event.position()
-            self.is_panning = False
-        elif event.button() == Qt.RightButton and self.pixmap_item:
-            coordinates = self.mapToScene(event.position().toPoint()).toPoint()
-            self.point_coordinates.append((coordinates.x(), coordinates.y()))
-            self.point_labels.append(0)
-            # Verificamos si el clic fue DENTRO de la imagen
-            if self.pixmap_item.contains(coordinates):
-                # Dibujamos un círculo rojo para marcar el punto
-                radius = (int(self.scene_rect.width())>>8) + self.min_markpoint_radius # Escalar punto a dibujar
-                marker = QGraphicsEllipseItem(
-                    coordinates.x() - radius,
-                    coordinates.y() - radius,
-                    radius * 2,
-                    radius * 2,
-                )
-                marker.setBrush(Qt.red)
-                marker.setPen(Qt.NoPen)
-                # Aseguramos que el marcador se dibuje encima de la foto
-                marker.setZValue(1) 
-                self.scene.addItem(marker)
-                self.marker_items.append(marker)
+        if (not self.is_calibration) and (not self.camera.getIsPreviewFlag()):
+            # Solo nos interesa el clic izquierdo p ara iniciar la lógica
+            if event.button() == Qt.LeftButton and self.pixmap_item:
+                self.click_pos = event.position()
+                self.is_panning = False
+            elif event.button() == Qt.RightButton and self.pixmap_item:
+                coordinates = self.mapToScene(event.position().toPoint()).toPoint()
+                # Verificamos si el clic fue DENTRO de la imagen
+                if self.pixmap_item.contains(coordinates):
+                    self.addPoint(x=coordinates.x(), y=coordinates.y(), label=0)
         
-        # Pasamos el evento a la clase base para que el drag se inicie si es necesario
-        super().mousePressEvent(event)
+            # Pasamos el evento a la clase base para que el drag se inicie si es necesario
+            super().mousePressEvent(event)
 
     def clearMask(self) -> None:
         if self.mask_item:
@@ -1139,35 +1249,150 @@ class ConfigDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout()
         
-        # Group Box sin título
-        camera_group = QGroupBox()
-        camera_layout = QFormLayout()
-        camera_layout.setHorizontalSpacing(20)
+        # Group Box "Tuning"
+        tuning_group = QGroupBox("Tuning")
+        tuning_layout = QFormLayout()
+        tuning_layout.setHorizontalSpacing(20)
         
-        # Auto gain (CheckBox)
-        self.check_auto_gain = QCheckBox()
-        self.check_auto_gain.setChecked(True)
-        camera_layout.addRow("Ganancia automática", self.check_auto_gain)
+        # Contrast (SpinBox)
+        self.spin_contrast = QDoubleSpinBox()
+        self.spin_contrast.setRange(0.0, 6.0)  # 100µs a 1s
+        self.spin_contrast.setValue(0.9)
+        self.spin_contrast.setSingleStep(0.1)
+        tuning_layout.addRow("Contraste", self.spin_contrast)
+
+        # Saturation (SpinBox)
+        self.spin_saturation = QDoubleSpinBox()
+        self.spin_saturation.setRange(0.0, 6.0)  # 100µs a 1s
+        self.spin_saturation.setValue(0.9)
+        self.spin_saturation.setSingleStep(0.1)
+        tuning_layout.addRow("Saturación", self.spin_saturation)
+
+        # Brightness (SpinBox)
+        self.spin_brightness = QDoubleSpinBox()
+        self.spin_brightness.setRange(-1.0, 1.0)  # 100µs a 1s
+        self.spin_brightness.setValue(0.0)
+        self.spin_brightness.setSingleStep(0.1)
+        tuning_layout.addRow("Brillo", self.spin_brightness)
+
+        # Sharpness (SpinBox)
+        self.spin_sharpness = QDoubleSpinBox()
+        self.spin_sharpness.setRange(0.0, 16.0)  # 100µs a 1s
+        self.spin_sharpness.setValue(1.0)
+        self.spin_sharpness.setSingleStep(0.1)
+        tuning_layout.addRow("Nitidez", self.spin_sharpness)
         
-        # Preset gain (ComboBox)
-        self.combo_preset_gain = QComboBox()
-        self.combo_preset_gain.addItems(["Low", "Medium", "High"])
-        camera_layout.addRow("Preset gain", self.combo_preset_gain)
+        tuning_group.setLayout(tuning_layout)
+
+
+        # Group Box "AEC"
+        aec_group = QGroupBox("AEC")
+        aec_layout = QFormLayout()
+        aec_layout.setHorizontalSpacing(20)
+        
+        # AEC (CheckBox)
+        self.check_aec = QCheckBox()
+        self.check_aec.setChecked(False)
+        self.check_aec.stateChanged.connect(self.aecChecked)
+        aec_layout.addRow("Control de exposición automático", self.check_aec)
         
         # Exposition time (SpinBox en microsegundos)
+        self.label_exposition_time = QLabel("Tiempo de exposición")
         self.spin_exposition_time = QSpinBox()
-        self.spin_exposition_time.setRange(100, 1000000)  # 100µs a 1s
-        self.spin_exposition_time.setValue(10000)
+        self.spin_exposition_time.setRange(1, 66666)
+        self.spin_exposition_time.setValue(9000)
         self.spin_exposition_time.setSuffix(" µs")
-        self.spin_exposition_time.setSingleStep(1000)
-        camera_layout.addRow("Tiempo de exposición", self.spin_exposition_time)
+        self.spin_exposition_time.setSingleStep(100)
+        aec_layout.addRow(self.label_exposition_time, self.spin_exposition_time)
         
-        camera_group.setLayout(camera_layout)
-        layout.addWidget(camera_group)
+        # Gain (SpinBox)
+        self.label_gain = QLabel("Ganancia")
+        self.spin_gain = QDoubleSpinBox()
+        self.spin_gain.setRange(1.0, 16.0)
+        self.spin_gain.setValue(1.0)
+        self.spin_gain.setSingleStep(0.1)
+        aec_layout.addRow(self.label_gain, self.spin_gain)
+        
+        aec_group.setLayout(aec_layout)
+
+
+        # Group Box "AWB"
+        awb_group = QGroupBox("AWB")
+        awb_layout = QFormLayout()
+        awb_layout.setHorizontalSpacing(20)
+        
+        # AWB (CheckBox)
+        self.check_awb = QCheckBox()
+        self.check_awb.setChecked(False)
+        self.check_awb.stateChanged.connect(self.awbChecked)
+        awb_layout.addRow("Balance de blancos automático", self.check_awb)
+        
+        # AWB Mode (ComboBox)
+        self.label_awb_mode = QLabel("Modo AWB")
+        self.combo_awb_mode = QComboBox()
+        self.combo_awb_mode.addItems([
+            "Auto", "Incandescent", "Tungsten", "Fluorescent",
+            "Indoor", "Daylight", "Cloudy"
+        ])
+        self.combo_awb_mode.setCurrentIndex(5)
+        self.label_awb_mode.hide()
+        self.combo_awb_mode.hide()
+        awb_layout.addRow(self.label_awb_mode, self.combo_awb_mode)
+        
+        # Red Gain (SpinBox)
+        self.label_red_gain = QLabel("Ganancia rojo")
+        self.spin_red_gain = QDoubleSpinBox()
+        self.spin_red_gain.setRange(0.0, 32.0)
+        self.spin_red_gain.setValue(1.7)
+        self.spin_red_gain.setSingleStep(0.1)
+        awb_layout.addRow(self.label_red_gain, self.spin_red_gain)
+
+        # Blue Gain (SpinBox)
+        self.label_blue_gain = QLabel("Ganancia azul")
+        self.spin_blue_gain = QDoubleSpinBox()
+        self.spin_blue_gain.setRange(0.0, 32.0)
+        self.spin_blue_gain.setValue(1.4)
+        self.spin_blue_gain.setSingleStep(0.1)
+        awb_layout.addRow(self.label_blue_gain, self.spin_blue_gain)
+        
+        awb_group.setLayout(awb_layout)
+
+
+        layout.addWidget(tuning_group)
+        layout.addWidget(aec_group)
+        layout.addWidget(awb_group)
         layout.addStretch()
         
         tab.setLayout(layout)
         return tab
+
+    def aecChecked(self, state):
+        if state == 2:
+            self.label_exposition_time.hide()
+            self.spin_exposition_time.hide()
+            self.label_gain.hide()
+            self.spin_gain.hide()
+        else:
+            self.label_exposition_time.show()
+            self.spin_exposition_time.show()
+            self.label_gain.show()
+            self.spin_gain.show()
+    
+    def awbChecked(self, state):
+        if state == 2:
+            self.label_red_gain.hide()
+            self.spin_red_gain.hide()
+            self.label_blue_gain.hide()
+            self.spin_blue_gain.hide()
+            self.label_awb_mode.show()
+            self.combo_awb_mode.show()
+        else:
+            self.label_awb_mode.hide()
+            self.combo_awb_mode.hide()
+            self.label_red_gain.show()
+            self.spin_red_gain.show()
+            self.label_blue_gain.show()
+            self.spin_blue_gain.show()
     
     # ==================== TAB 2: CALIBRATION ====================
     def createCalibrationTab(self):
@@ -1475,7 +1700,7 @@ class ConfigDialog(QDialog):
         
         # Resolution DPI
         self.spin_export_dpi = QSpinBox()
-        self.spin_export_dpi.setRange(72, 600)
+        self.spin_export_dpi.setRange(50, 600)
         self.spin_export_dpi.setValue(300)
         self.spin_export_dpi.setSingleStep(50)
         self.spin_export_dpi.setSuffix(" dpi")
@@ -1489,14 +1714,20 @@ class ConfigDialog(QDialog):
         results_layout = QVBoxLayout()
         results_layout.setSpacing(10)
 
-        # Save original image (CheckBox)
+
+        # Save images (CheckBox)
         check_save_widget = QWidget()
         check_save_layout = QFormLayout(check_save_widget)
         check_save_layout.setHorizontalSpacing(20)
-        check_save_layout.setContentsMargins(0, 0, 0, 0) 
+        check_save_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.check_save_calib_img = QCheckBox()
+        self.check_save_calib_img.setChecked(True)
+        check_save_layout.addRow("Guardar imagen calibrada", self.check_save_calib_img)
+
         self.check_save_original_img = QCheckBox()
         self.check_save_original_img.setChecked(True)
-        check_save_layout.addRow("Guardar imagenes originales", self.check_save_original_img)
+        check_save_layout.addRow("Guardar imagen original", self.check_save_original_img)
         results_layout.addWidget(check_save_widget)
 
         # Folder Resultados
@@ -1565,9 +1796,17 @@ class ConfigDialog(QDialog):
         config = self.config_manager.getConfig()
         
         # Camera
-        self.check_auto_gain.setChecked(config['camera']['auto_gain'])
-        self.combo_preset_gain.setCurrentText(config['camera']['preset_gain'])
-        self.spin_exposition_time.setValue(config['camera']['exposition_time'])
+        self.spin_contrast.setValue(config['camera']['tuning']['contrast'])
+        self.spin_saturation.setValue(config['camera']['tuning']['saturation'])
+        self.spin_brightness.setValue(config['camera']['tuning']['brightness'])
+        self.spin_sharpness.setValue(config['camera']['tuning']['sharpness'])
+        self.check_aec.setChecked(config['camera']['AEC']['aec'])
+        self.spin_exposition_time.setValue(config['camera']['AEC']['exposition_time'])
+        self.spin_gain.setValue(config['camera']['AEC']['gain'])
+        self.check_awb.setChecked(config['camera']['AWB']['awb'])
+        self.combo_awb_mode.setCurrentIndex(config['camera']['AWB']['awb_mode'])
+        self.spin_red_gain.setValue(config['camera']['AWB']['red_gain'])
+        self.spin_blue_gain.setValue(config['camera']['AWB']['blue_gain'])
         
         # Calibration
         self.label_calib_params_path.setText(config['calibration']['calibration_params_path'])
@@ -1597,6 +1836,7 @@ class ConfigDialog(QDialog):
         # Export
         self.spin_export_dpi.setValue(config['export']['analysis_images']['dpi'])
         self.check_save_original_img.setChecked(config['export']['results']['save_original_img'])
+        self.check_save_calib_img.setChecked(config['export']['results']['save_calibrated_img'])
         self.label_results_folder.setText(config['export']['results']['folder_path'])
     
     def restoreDefaults(self):
@@ -1627,14 +1867,26 @@ class ConfigDialog(QDialog):
 
         dict_values: dict = {
                                 'camera': {
-                                    'auto_gain': self.check_auto_gain.isChecked(),
-                                    'preset_gain': self.combo_preset_gain.currentText(),
-                                    'exposition_time': self.spin_exposition_time.value(),
-                                    'description': 'Parámetros de la cámara'
+                                    'tuning':{
+                                        'contrast': self.spin_contrast.value(),
+                                        'saturation': self.spin_saturation.value(),
+                                        'brightness': self.spin_brightness.value(),
+                                        'sharpness': self.spin_sharpness.value()
+                                    },
+                                    'AEC':{
+                                        'aec': self.check_aec.isChecked(),
+                                        'exposition_time': self.spin_exposition_time.value(),
+                                        'gain': self.spin_gain.value()
+                                    },
+                                    'AWB':{
+                                        'awb': self.check_awb.isChecked(),
+                                        'awb_mode': self.combo_awb_mode.currentIndex(),
+                                        'red_gain': self.spin_red_gain.value(),
+                                        'blue_gain': self.spin_blue_gain.value()
+                                    }
                                 },
                                 'calibration': {
-                                    'calibration_params_path': self.label_calib_params_path.text(),
-                                    'description': 'Rutas de calibración'
+                                    'calibration_params_path': self.label_calib_params_path.text()
                                 },
                                 'segmentation': {
                                     'scene': {
@@ -1647,8 +1899,7 @@ class ConfigDialog(QDialog):
                                     'guided_filter': {
                                         'radius': self.spin_filter_radius.value(),
                                         'epsilon': self.spin_filter_epsilon.value()
-                                    },
-                                    'description': 'Parámetros de segmentación'
+                                    }
                                 },
                                 'color': {
                                     'pantone': {
@@ -1662,8 +1913,7 @@ class ConfigDialog(QDialog):
                                         'threshold_softvoting': self.spin_threshold_softvoting.value(),
                                         'sigma': self.spin_sigma.value(),
                                         'n_clusters_soft': self.spin_n_clusters_soft.value()
-                                    },
-                                    'description': 'Parámetros de estimación de color'
+                                    }
                                 },
                                 'export': {
                                     'analysis_images': {
@@ -1671,9 +1921,9 @@ class ConfigDialog(QDialog):
                                     },
                                     'results': {
                                         'folder_path': self.label_results_folder.text(),
+                                        'save_calibrated_img': self.check_save_calib_img.isChecked(),
                                         'save_original_img': self.check_save_original_img.isChecked()
-                                    },
-                                    'description': 'Parámetros de exportación'
+                                    }
                                 }
                             }
         
@@ -1684,23 +1934,31 @@ class MainWindow(QMainWindow):
     # Initialization
     def __init__(self) -> None:
         super().__init__()
-        # Attributes
-        FONT_FAMILY = 'Sans Serif'
-        
+
         self.source_img_path = None
-        self.doc = None
+        self.doc = Documentation()
 
         # Inicializar el gestor de configuración
         self.config_manager = ConfigManager()
 
+        self.camera = Camera()
+
         self.calibration = Calibration(self.config_manager)
         self.processing = ImageProcessing()
+
+        # Variables para manejo de preview
+        self.preview_timer = QTimer()
+        self.preview_timer.timeout.connect(self.updatePreviewFrame)
+        self.preview_fps = 10  # FPS bajo para optimizar RAM
+        self.preview_timer.setInterval(int(1000 / self.preview_fps))
+        self.current_preview_type = 'segmentation'  # 'segmentation' o 'calibration'
+        self.is_preview_active = False
 
         # Window Settings
         self.setWindowTitle("SACISMC")
 
         # Widgets
-        self.viewer = Viewer()
+        self.viewer = Viewer(camera=self.camera)
         self.viewer.setFixedSize(720, 720)
 
         # Panel lateral derecho
@@ -1760,10 +2018,79 @@ class MainWindow(QMainWindow):
         # Initial config
         self.applyConfigToComponents(self.config_manager.getConfig())
 
+        # Iniciar preview de segmentación al arrancar
+        self.startPreviewSegmentation()
+
     # Methods
+    def startPreviewSegmentation(self):
+        """Inicia el preview para el módulo de segmentación"""
+        self.current_preview_type = 'segmentation'
+        self.camera.startPreview(preview_type='segmentation')
+
+        if self.viewer.scene:
+            self.viewer.scene.clear()
+
+        # Cargar escena UNA VEZ
+        self.viewer.loadScene()
+        self.viewer.clearVariables()
+
+        if not self.preview_timer.isActive():
+            self.preview_timer.start()
+
+        self.is_preview_active = True
+    
+    def startPreviewCalibration(self):
+        """Inicia el preview para el módulo de calibración"""
+        self.current_preview_type = 'calibration'
+        self.camera.startPreview(preview_type='calibration')
+
+        if self.viewer.scene:
+            self.viewer.scene.clear()
+
+        self.viewer.loadScene()
+        self.viewer.clearVariables()
+
+        if not self.preview_timer.isActive():
+            self.preview_timer.start()
+
+        self.is_preview_active = True
+    
+    def stopPreview(self):
+        """Detiene el preview de cámara"""
+        if self.preview_timer.isActive():
+            self.preview_timer.stop()
+        self.camera.stopPreview()
+        self.is_preview_active = False
+        
+        if self.viewer.scene:
+            self.viewer.scene.clear()
+        
+        gc.collect()
+    
+    def updatePreviewFrame(self):
+        """Actualiza el frame del preview en el viewer"""
+        if not self.is_preview_active:
+            return
+        
+        frame = self.camera.getPreviewFrame(preview_type=self.current_preview_type)
+
+        pixmap = self.viewer.fromCV2ToQPixmap(frame)
+
+        if self.viewer.scene is None:
+            self.viewer.loadScene()
+            self.viewer.clearVariables()
+
+        self.viewer.setImageFromPixmap(pixmap)
+        del frame
 
     def openSettingsDialog(self) -> None:
         """Abre el diálogo de configuración"""
+        # Detener preview al abrir configuración
+        was_preview_active = self.is_preview_active
+        preview_type_backup = self.current_preview_type
+        if was_preview_active:
+            self.stopPreview()
+
         dialog = ConfigDialog(self, self.config_manager, self.processing)
         
         # Aplicar el mismo estilo que la ventana principal
@@ -1784,8 +2111,25 @@ class MainWindow(QMainWindow):
                 "Los parámetros se han guardado y aplicado correctamente."
             )
 
+            # Reanudar preview con nueva configuración si estaba activo
+            if was_preview_active:
+                if preview_type_backup == 'segmentation':
+                    self.startPreviewSegmentation()
+                else:
+                    self.startPreviewCalibration()
+        else:
+            # Si se canceló, solo reanudar preview si estaba activo
+            if was_preview_active:
+                if preview_type_backup == 'segmentation':
+                    self.startPreviewSegmentation()
+                else:
+                    self.startPreviewCalibration()
+
     def applyConfigToComponents(self, config):
         """Aplica la configuración a todos los componentes de la aplicación"""
+        # Aplicar a Camara
+        self.camera.setControls(config)
+
         # Aplicar a Calibration
         self.calibration.params_path = config['calibration']['calibration_params_path']
         
@@ -1799,6 +2143,8 @@ class MainWindow(QMainWindow):
         # Crear subcarpeta images
         images_folder = os.path.join(results_folder, "images")
         os.makedirs(images_folder, exist_ok=True)
+
+        self.doc.dpi = config['export']['analysis_images']['dpi']
         
         # Aplicar a Processing si existe
         if self.processing:
@@ -2016,37 +2362,47 @@ class MainWindow(QMainWindow):
         group_others_layout.addWidget(group_box_colors)
 
 
-        line = QFrame()
-        line.setFrameShape(QFrame.NoFrame)
-        line.setFixedHeight(1)
-        group_others_layout.addWidget(line)
+        line1 = QFrame()
+        line1.setFrameShape(QFrame.NoFrame)
+        line1.setFixedHeight(1)
+        group_others_layout.addWidget(line1)
 
         # -------------------- REGISTER --------------------
 
-        group_box_3 = QGroupBox("Registro")
-        group_layout_3 = QVBoxLayout()
-        group_layout_3.setContentsMargins(13, 15, 13, 10) 
-        group_layout_3.setSpacing(10)
+        group_box_register = QGroupBox("Registro")
+        group_layout_register = QVBoxLayout()
+        group_layout_register.setContentsMargins(13, 15, 13, 10) 
+        group_layout_register.setSpacing(10)
 
         self.input_id = QLineEdit()
         self.input_id.setPlaceholderText("Identificador")
         self.input_id.setFixedHeight(40)
-        group_layout_3.addWidget(self.input_id)
+        group_layout_register.addWidget(self.input_id)
 
         self.log_button = QPushButton("Guardar")
         self.log_button.clicked.connect(self.saveRecord)
         self.log_button.setFixedHeight(50)
         self.log_button.setStyleSheet("font-size: 16px;")
-        group_layout_3.addWidget(self.log_button)
+        group_layout_register.addWidget(self.log_button)
 
-        group_box_3.setLayout(group_layout_3)
-        group_others_layout.addWidget(group_box_3)
+        group_box_register.setLayout(group_layout_register)
+        group_others_layout.addWidget(group_box_register)
 
 
         self.group_box_others.setLayout(group_others_layout)
         self.group_box_others.hide()
 
         layout.addWidget(self.group_box_others)
+
+        # Botones
+
+        self.return_button = QPushButton("Volver")
+        self.return_button.clicked.connect(self.returnClicked)
+        self.return_button.setFixedHeight(30)
+        self.return_button.setStyleSheet("font-size: 16px; margin: 0px;")
+        self.return_button.hide()
+        layout.addWidget(self.return_button)
+
         layout.addStretch()
 
         return widget
@@ -2139,6 +2495,12 @@ class MainWindow(QMainWindow):
 
         layout_params.addWidget(group_box_detect)
 
+        # ------------ Delta Labels ------------
+        self.label_measures_delta = QLabel("")
+        self.label_measures_delta.setStyleSheet("padding: 0px 0px 0px 3px;")
+        self.label_measures_delta.hide()
+        layout_params.addWidget(self.label_measures_delta)
+
         # ------ Group Box - Save and Apply
         self.group_box_save_apply = QGroupBox("")
         self.group_box_save_apply.setStyleSheet("padding-top: 0px;")
@@ -2182,11 +2544,6 @@ class MainWindow(QMainWindow):
         self.radio_buttons.hide()
         layout.addWidget(self.radio_buttons)
 
-        # ------------ Delta Labels ------------
-        self.label_measures_delta = QLabel('<span style="text-decoration: overline;">ΔE00</span>')
-        self.label_measures_delta.setStyleSheet("padding: 0px 10px 8px 10px;")
-        self.label_measures_delta.hide()
-        layout.addWidget(self.label_measures_delta)
 
         # ------------ Cancel Button ------------
         #line2 = QFrame()
@@ -2202,12 +2559,63 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.button_finish)
 
         return widget
+    
+    def returnClicked(self) -> None:
+        self.doc.setIsSegmentedFlag(False)
+        self.startPreviewSegmentation()
+
+        if self.group_box_others.isVisible():
+            self.group_box_others.hide()
+
+        if self.return_button.isVisible():
+            self.return_button.hide()
 
     def takePhotoOperationClicked(self) -> None:
-        print("Botón presionado")
+        # Detener preview mientras se captura
+        self.stopPreview()
+
+        image = self.camera.capture()
+
+        self.calibration.clearAllCalibration()
+        self.restoreOperationWidget()
+
+        self.processing.loadImage(image, self.calibration)
+        self.viewer.loadScene()
+        self.viewer.clearVariables()
+        self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.processing.getScaledImage()))            
+        self.doc.setIsSegmentedFlag(False)
+        if self.group_box_others.isVisible():
+            self.group_box_others.hide()
+
+        if not self.return_button.isVisible():
+            self.return_button.show()
+
+        QMessageBox.information(
+                    self,
+                    "Completado",
+                    "Captura tomada exitosamente!\nAhora crea los point-prompts"
+                )
 
     def takePhotoCalibrationClicked(self) -> None:
+        # Detener preview mientras se captura
+        self.stopPreview()
+
+        self.calibration.loadRawImage(self.camera.capture())
+        self.viewer.loadScene()
+        self.viewer.clearVariables()
+        self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.calibration.getRawImage()))
         self.group_box_params.show()
+        self.label_measures_delta.hide()
+        self.group_box_save_apply.hide()
+        self.radio_buttons.hide()
+        self.button_finish.setText("Cancelar")
+        self.final_status_calibration = False
+
+        QMessageBox.information(
+                    self,
+                    "Completado",
+                    "Captura tomada exitosamente!"
+                )
 
     def showImgSelection(self) -> None:
         if self.radio_calibrated.isChecked():
@@ -2216,12 +2624,28 @@ class MainWindow(QMainWindow):
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.calibration.getRawImage()))
     
     def selectPhotoCalibrationClicked(self) -> None:
+        # Detener preview al abrir configuración
+        was_preview_active = self.is_preview_active
+        preview_type_backup = self.current_preview_type
+        if was_preview_active:
+            self.stopPreview()
+
         path, _ = QFileDialog.getOpenFileName(
             self, "Seleccionar Imagen", "resources/calibration", "Archivos de Imagen (*.npy *.png)"
         )
         #"Seleccionar Imagen", "resources/calibration", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
         if path:
-            self.calibration.loadRawImage(path)
+            ext: str = os.path.splitext(path)[1].lower()
+            if ext == ".png":
+                img = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB)
+            elif ext == ".npy":
+                img = np.load(path)
+            else:
+                QMessageBox.warning(self, "Formato no soportado",
+                                    f"El formato {ext} no es válido para abrir.")
+                return None
+            
+            self.calibration.loadRawImage(img)
             self.viewer.loadScene()
             self.viewer.clearVariables()
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.calibration.getRawImage()))
@@ -2235,6 +2659,16 @@ class MainWindow(QMainWindow):
     def detectColorCheckerClicked(self) -> None:
         self.calibration.detectColorChecker(drawPatches=True)
         self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.calibration.getDrawImage()))
+
+        self.calibration.reconstructModel()
+        measures_delta_e00: dict = self.calibration.getMeasuresDeltaE00()
+        label: str = f'<span style="text-decoration: overline;">ΔE00</span> : {measures_delta_e00["mean"]:.2f}' \
+                    f'\u00A0\u00A0\u00A0\u00A0\u00A0|\u00A0\u00A0\u00A0' \
+                    f'min (ΔE00) : {measures_delta_e00["min"]:.2f}' \
+                    f'\u00A0\u00A0\u00A0\u00A0\u00A0|\u00A0\u00A0\u00A0' \
+                    f'max (ΔE00) : {measures_delta_e00["max"]:.2f}'
+        self.label_measures_delta.setText(label)
+        self.label_measures_delta.show()
         self.group_box_save_apply.show()
 
     def saveAndApplyClicked(self) -> None:
@@ -2252,20 +2686,11 @@ class MainWindow(QMainWindow):
             self.calibration.setPathcalibrationParams(file_path)
             self.calibration.saveCalibrationParams()
             # Apply calibration and show it
-            model = self.calibration.reconstructModelFromParams()
-            img = self.calibration.applyColorCorrection(self.calibration.getRawImage(), model)
+            img = self.calibration.applyColorCorrection(self.calibration.getRawImage())
             self.calibration.setDrawImage(img)
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(img))
             # Update GUI
             self.radio_buttons.show()
-            measures_delta_e00: dict = self.calibration.getMeasuresDeltaE00()
-            label: str = f'<span style="text-decoration: overline;">ΔE00</span> : {measures_delta_e00["mean"]:.2f}' \
-                        f'\u00A0\u00A0\u00A0\u00A0\u00A0|\u00A0\u00A0\u00A0\u00A0\u00A0' \
-                        f'min(ΔE00) : {measures_delta_e00["min"]:.2f}' \
-                        f'\u00A0\u00A0\u00A0\u00A0\u00A0|\u00A0\u00A0\u00A0\u00A0\u00A0' \
-                        f'max(ΔE00) : {measures_delta_e00["max"]:.2f}'
-            self.label_measures_delta.setText(label)
-            self.label_measures_delta.show()
             self.button_finish.setText("Finalizar")
             
     def finishCalibrationClicked(self) -> None:
@@ -2283,6 +2708,10 @@ class MainWindow(QMainWindow):
             self.viewer.scene.clear()
         self.calibration.clearAllCalibration()
         self.restoreOperationWidget()
+
+        # Volver al preview de segmentación
+        self.stopPreview()
+        self.startPreviewSegmentation()
     
     def showMask(self, state) -> None:
         if state == 2:
@@ -2396,13 +2825,26 @@ class MainWindow(QMainWindow):
         images_folder = os.path.join(results_folder, "images")
         os.makedirs(images_folder, exist_ok=True)
 
+        excel_path = os.path.join(results_folder, "registros.xlsx")
+        date: datetime = datetime.now()
+        msg:str = f"Datos guardados correctamente:\n- Excel: {excel_path}"
+
         # Rutas usando la carpeta configurada
         img_filename_original: str = f"{id.lower().replace(' ','_')}.png"
         img_filename_calibrated: str = f"{id.lower().replace(' ','_')}_calibrated.png"
-        excel_path = os.path.join(results_folder, "registros.xlsx")
 
-        date: datetime = datetime.now()
+        if config['export']['results']['save_calibrated_img']:
+            img_path: str = os.path.join(images_folder, img_filename_calibrated)
+            self.processing.saveCalibratedImage(img_path)
+            msg = msg + f"\n- Imagen calibrada: {img_path}"
 
+        if config['export']['results']['save_original_img']:
+            img_path: str = os.path.join(images_folder, img_filename_original)
+            self.processing.saveOriginalImage(img_path)
+            msg = msg + f"\n- Imagen original: {img_path}"
+
+        if (not config['export']['results']['save_calibrated_img']) and (not config['export']['results']['save_original_img']):
+            images_folder = "NA"
 
         new_data: dict = {
                             "Identificador": [id],
@@ -2440,15 +2882,6 @@ class MainWindow(QMainWindow):
             
             # Guardar el DataFrame en Excel
             final_df.to_excel(excel_path, index=False, engine='openpyxl')
-
-            img_path: str = os.path.join(images_folder, img_filename_calibrated)
-            self.processing.saveCalibratedImage(img_path)
-            msg:str = f"Datos guardados correctamente:\n- Excel: {excel_path}\n- Imagen calibrada: {img_path}"
-
-            if config['export']['results']['save_original_img']:
-                img_path: str = os.path.join(images_folder, img_filename_original)
-                self.processing.saveOriginalImage(img_path)
-                msg = msg + f"\n- Imagen original: {img_path}"
 
             # Mostrar mensaje de éxito
             QMessageBox.information(self, "Completado", msg)
@@ -2497,6 +2930,11 @@ class MainWindow(QMainWindow):
                             f"Error al guardar la imagen: {str(e)}")
 
     def startColorCalibration(self) -> None:
+        # Detener preview de segmentación
+        self.stopPreview()
+        self.doc.setIsSegmentedFlag(False)
+
+        self.viewer.setIsCalibrationFlag(True)
         if self.viewer.scene:
             self.viewer.scene.clear()
         self.group_box_others.hide()
@@ -2504,7 +2942,11 @@ class MainWindow(QMainWindow):
         self.side_panel.addWidget(calibrationWidget)
         self.side_panel.setCurrentWidget(calibrationWidget)
 
+        # Iniciar preview de calibración
+        self.startPreviewCalibration()
+
     def restoreOperationWidget(self) -> None:
+        self.viewer.setIsCalibrationFlag(False)
         current_widget = self.side_panel.currentWidget()
         self.side_panel.setCurrentWidget(self.operationWidget)
 
@@ -2512,21 +2954,13 @@ class MainWindow(QMainWindow):
             self.side_panel.removeWidget(current_widget)
             current_widget.deleteLater()
 
-    def selectColorCheckerimage(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar Imagen", "resources/calibration", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
-        )
-        if path:
-            #self.calibration.setColorCheckerPath(path)
-            QMessageBox.information(self, 
-                                    "Nuevo Color Checker seleccionado", 
-                                    f"Crea nuevamente los parámetros de calibración.")
-
     def openImage(self) -> None:
         self.source_img_path, _ = QFileDialog.getOpenFileName(
             self, "Seleccionar Imagen", "resources/test_images", "Archivos de Imagen (*.png *.npy *.dng)"
         )
         if self.source_img_path:
+            # Detener preview al abrir imagen desde archivo
+            self.stopPreview()
 
             ext = os.path.splitext(self.source_img_path)[1].lower()
             if ext == ".png":
@@ -2544,12 +2978,15 @@ class MainWindow(QMainWindow):
             self.viewer.loadScene()
             self.viewer.clearVariables()
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.processing.getScaledImage()))            
-            self.doc = None
+            self.doc.setIsSegmentedFlag(False)
             if self.group_box_others.isVisible():
                 self.group_box_others.hide()
+            
+            if not self.return_button.isVisible():
+                self.return_button.show()
 
     def runSegmentation(self) -> None:
-        if self.source_img_path:
+        if self.processing:
             if self.viewer.point_coordinates:
                 # Obtener configuración de método de color
                 config = self.config_manager.getConfig()
@@ -2577,7 +3014,7 @@ class MainWindow(QMainWindow):
                                                             n_clusters=config['color']['method']['n_clusters_soft'],
                                                             min_weight_threshold=config['color']['method']['threshold_softvoting'])
                 self.updateColorDisplay()
-                self.doc = Documentation()
+                self.doc.setIsSegmentedFlag(True)
             else:
                 QMessageBox.warning(self, 
                                 "Prompts no encontrados", 
@@ -2594,7 +3031,7 @@ class MainWindow(QMainWindow):
                                 "Por favor, carga una imagen antes de correr la segmentación.")
 
     def exportFeatheredComparisonImage(self) -> None:
-        if self.doc:
+        if self.doc.getIsSegmentedFlag():
             img_path = self.doc.createGuidedFilterComparisonImage(self.processing)
             QMessageBox.information(self, 
                                 "Imagen exportada exitosamente", 
@@ -2605,7 +3042,7 @@ class MainWindow(QMainWindow):
                                 "Por favor, correr la segmentación antes de exportar la imagen.")
 
     def exportColorComparisonImage(self) -> None:
-        if self.doc:
+        if self.doc.getIsSegmentedFlag():
             img_path = self.doc.createColorMethodsComparationImage(self.config_manager, self.processing)
             QMessageBox.information(self, 
                                 "Imagen exportada exitosamente", 
@@ -2617,7 +3054,7 @@ class MainWindow(QMainWindow):
 
 
     def exportHistogram(self) -> None:
-        if self.doc and self.processing:
+        if self.doc.getIsSegmentedFlag():
             # 1. Obtener los datos del histograma desde ImageProcessing
             hist_data = self.processing.getSegmentedRegionHistogram()
 

@@ -2,3 +2,8 @@
 __pycache__/random.cpython-312.pyc
 results
 resources/config/user_config.json
+resources/exported_images
+resources/calibration/params_pantone.pickle
+resources/calibration/params_prueba.pickle
+resources/calibration/params_sin_titulo.pickle
+resources/calibration/color_checker_test_pantone.png

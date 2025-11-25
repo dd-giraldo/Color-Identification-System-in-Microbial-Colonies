@@ -21,4 +21,4 @@ mkdir -p ../checkpoints/
 wget -nc -P ../checkpoints/ https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt
 
 # Open GUI
-python3 gui_pyside.py
+#python3 gui_pyside.py
