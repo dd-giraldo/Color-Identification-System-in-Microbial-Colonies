@@ -126,9 +126,9 @@ class Documentation():
     def __init__(self) -> None:
         self.dpi = 300
         self.is_segmented_flag = False
-        self.list_r = [2, 4, 8, 12]
-        self.list_eps = [0.1**2, 0.2**2, 0.3**2, 0.4**2]
-        self.export_folder = "resources/exported_images"
+        self.list_r = [12, 8, 4, 2]
+        self.list_eps = [0.1, 0.2, 0.3, 0.4]
+        self.export_folder = "exports"
     
     def getIsSegmentedFlag(self):
         return self.is_segmented_flag
@@ -141,22 +141,39 @@ class Documentation():
         columns: int = len(self.list_eps)
         # Crea una figura y una cuadrícula de subgráficos (axes)
         # figsize controla el tamaño final de la imagen en pulgadas
-        fig, axes = plt.subplots(rows, columns, figsize=(10, 7.5))
+        fig, axes = plt.subplots(rows, columns, figsize=(10, 8))
 
         for i, r in enumerate(self.list_r):
             for j, eps in enumerate(self.list_eps):
-                processing.guidedFilter(r, eps)
-                img = processing.createColoredMask(processing.getFeatheredMask(),
-                                                            processing.getFeatheredMaskColor())
+                processing.guidedFilter(r, eps**2)
+                
+                valid_mask: bool = processing.feathered_mask > 0
+                
+                if (i == 0) and (j == 0):
+                    # Encuentra el bounding box de la región válida
+                    valid_rows = np.any(valid_mask, axis=1)
+                    valid_cols = np.any(valid_mask, axis=0)
+                    rmin, rmax = np.where(valid_rows)[0][[0, -1]]
+                    cmin, cmax = np.where(valid_cols)[0][[0, -1]]
+
+                # Recorta la imagen al bounding box
+                img = processing.calibrated_image[rmin:rmax+1, cmin:cmax+1]
+                mask_crop = processing.feathered_mask[rmin:rmax+1, cmin:cmax+1]
+
+                colored_mask = processing.createColoredMask(mask_crop, processing.getFeatheredMaskColor(), 0.6)
 
                 # Muestra la imagen en el subgráfico correspondiente
                 ax = axes[i, j]
                 ax.imshow(img)
+              
+
+                ax.imshow(colored_mask)
+
                 ax.set_xticks([])
                 ax.set_yticks([])
 
                 if i == rows - 1:
-                    ax.set_xlabel(f'ε = {eps:.2f}', fontsize=12, rotation=00, labelpad=7, ha='center', va='center')
+                    ax.set_xlabel(f'ε = {eps:.1f}²', fontsize=12, rotation=00, labelpad=7, ha='center', va='center')
                 
                 if j == 0:
                     ax.set_ylabel(f'r = {r}', fontsize=12, rotation=90, labelpad=7, ha='center', va='center')
@@ -270,10 +287,9 @@ class Documentation():
         img_path = os.path.join(self.export_folder, "color_comparation.png")
         plt.savefig(img_path, dpi=self.dpi, bbox_inches='tight')
         plt.close(fig)
-        return path
+        return img_path
     
-    @staticmethod
-    def createHistogramImage(histograms):
+    def createHistogramImage(self, histograms):
         """
         Crea y guarda una imagen del histograma de color a partir de los datos calculados.
         """
@@ -485,7 +501,7 @@ class ImageProcessing():
 
         # Create SAM2 predictor
         device = torch.device("cpu")
-        sam2_checkpoint = "../checkpoints/sam2.1_hiera_tiny.pt"
+        sam2_checkpoint = "resources/checkpoints/sam2.1_hiera_tiny.pt"
         model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
         sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
         self.predictor = SAM2ImagePredictor(sam2_model)
@@ -593,10 +609,7 @@ class ImageProcessing():
                         )
         self.scaled_feathered_mask = self.decimateImage(self.feathered_mask)
 
-    def getSegmentedRegionHistogram(self):
-        if self.feathered_mask is None or self.calibrated_image is None:
-            return None
-        
+    def getSegmentedRegionHistogram(self):        
         _, binary_mask_uint8 = cv2.threshold(self.feathered_mask, 0.5, 255, cv2.THRESH_BINARY)
         binary_mask_uint8 = binary_mask_uint8.astype(np.uint8)
 
@@ -614,6 +627,16 @@ class ImageProcessing():
             histograms[color] = hist
             
         return histograms
+
+    def searchPantoneInDatabase(self, pantone_name: str) -> list:
+        search = pantone_name.strip().upper()
+        matches = np.where(self.pantone_name_colors == search)[0]
+        if matches.size > 0:
+            idx = matches[0]
+        else:
+            return None
+
+        return [self.pantone_name_colors[idx], self.pantone_lab_colors[idx]]
 
     def loadPantoneDatabase(self) -> None:
         with open(self.pantone_database_path, "r", encoding='utf-8') as f:
@@ -788,8 +811,9 @@ class ImageProcessing():
         return image_lab
 
     @staticmethod
-    def createColoredMask(mask, mask_color):
-        color = np.hstack((mask_color/255, [0.4]))
+    def createColoredMask(mask, mask_color, alpha=0.4):
+        mask = np.clip(mask, 0, 255)
+        color = np.hstack((mask_color/255, [alpha]))
         h, w = mask.shape[-2:]
         masked_image_float = mask.reshape(h, w, 1) * color.reshape(1, 1, -1)
         masked_image_uint8 = (masked_image_float * 255).astype(np.uint8)
@@ -1513,7 +1537,7 @@ class ConfigDialog(QDialog):
         self.spin_filter_epsilon.setDecimals(2)
         self.spin_filter_epsilon.setSingleStep(0.01)
         self.spin_filter_epsilon.setSuffix("²")
-        filter_layout.addRow("Epsilon (ε²)", self.spin_filter_epsilon)
+        filter_layout.addRow("Epsilon (ε)", self.spin_filter_epsilon)
         
         filter_group.setLayout(filter_layout)
         layout.addWidget(filter_group)
@@ -1976,12 +2000,14 @@ class MainWindow(QMainWindow):
         submenu_extract = menu_file.addMenu("Exportar")
         action_extract_img = submenu_extract.addAction("Imagen")
         action_extract_img.triggered.connect(self.saveImage)
-        action_extract_filter_comparison = submenu_extract.addAction("Comparación filtro guiado")
-        action_extract_filter_comparison.triggered.connect(self.exportFeatheredComparisonImage)
-        action_extract_color_comparison = submenu_extract.addAction("Comparación método de color")
-        action_extract_color_comparison.triggered.connect(self.exportColorComparisonImage)
         action_extract_histogram = submenu_extract.addAction("Histograma de color segmento")
         action_extract_histogram.triggered.connect(self.exportHistogram)
+        action_extract_filter_comparison = submenu_extract.addAction("Comparación filtro guiado")
+        action_extract_filter_comparison.triggered.connect(self.exportFeatheredComparisonImage)
+        action_extract_color_comparison = submenu_extract.addAction("Comparación métodos de color (imagen)")
+        action_extract_color_comparison.triggered.connect(self.exportColorComparisonImage)
+        action_extract_color_excel = submenu_extract.addAction("Comparación métodos de color (tabla)")
+        action_extract_color_excel.triggered.connect(self.exportColorComparison)
 
         action_settings = menu_file.addAction("Configuración")
         action_settings.triggered.connect(self.openSettingsDialog)
@@ -2379,6 +2405,8 @@ class MainWindow(QMainWindow):
         self.input_id.setFixedHeight(40)
         group_layout_register.addWidget(self.input_id)
 
+        self.id_name = None
+
         self.log_button = QPushButton("Guardar")
         self.log_button.clicked.connect(self.saveRecord)
         self.log_button.setFixedHeight(50)
@@ -2689,6 +2717,43 @@ class MainWindow(QMainWindow):
             img = self.calibration.applyColorCorrection(self.calibration.getRawImage())
             self.calibration.setDrawImage(img)
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(img))
+
+            # Create excel report
+            excel_path = "resources/calibration/calibration_logs.xlsx"
+
+            deltas: dict = self.calibration.getMeasuresDeltaE00()
+            date: datetime = datetime.now()
+
+            new_data: dict = {
+                                "Marca Temporal": date.strftime("%Y-%m-%d %H:%M:%S"),
+                                "Archivo Calibración": file_path,
+                                "ΔE00 Promedio": f"{deltas['mean']:.2f}",
+                                "ΔE00 Mínimo": f"{deltas['min']:.2f}",
+                                "ΔE00 Máximo": f"{deltas['max']:.2f}",
+                                "ΔE00 Parches": f"{deltas['values'].tolist()}"
+                            }
+
+            new_df = pd.DataFrame([new_data])
+
+            try:
+                if os.path.exists(excel_path):
+                    # Leer el archivo existente
+                    existing_df = pd.read_excel(excel_path)
+                    
+                    # Concatenar los datos existentes con los nuevos
+                    final_df = pd.concat([existing_df, new_df], ignore_index=True)
+                    final_df = final_df.astype(str)
+                else:
+                    # Si no existe, usar solo los nuevos datos
+                    final_df = new_df
+                
+                # Guardar el DataFrame en Excel
+                final_df.to_excel(excel_path, index=False, engine='openpyxl')
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error", 
+                                f"Error al guardar los datos: {str(e)}")
+
             # Update GUI
             self.radio_buttons.show()
             self.button_finish.setText("Finalizar")
@@ -2810,12 +2875,175 @@ class MainWindow(QMainWindow):
                 self.color_delta_3.setText(f"ΔE00: {delta:.5f}")
                 self.color_delta_3.show()
     
+    def exportColorComparison(self) -> None:
+        if self.doc.getIsSegmentedFlag():
+            headers = ("Marca Temporal", "Identificador", "Guía - Pantone", "Guía - LAB",
+                        "Mediana - Pantone", "Mediana - LAB", "Mediana - ΔE00", "Mediana - Tiempo Ejecución (ms)",
+                        "K-Means - Pantone", "K-Means - LAB", "K-Means - ΔE00", "K-Means - Tiempo Ejecución (ms)",
+                        "Soft Voting - Pantone", "Soft Voting - LAB", "Soft Voting - ΔE00", "Soft Voting - Tiempo Ejecución (ms)",
+                        "Archivo Calibración")
+            values = ["NA" for _ in range(len(headers))]
+            results: dict = self.doc.getColorMethods(self.config_manager, self.processing)
+            config = self.config_manager.getConfig()
+
+            # -------- SET VALUES ---------
+
+            # time stamp
+            date: datetime = datetime.now()
+            values[0] = date.strftime("%Y-%m-%d %H:%M:%S")
+
+            # median - pantone
+            values[4] = results['Mediana Pesada']['Color 1']['Pantone Name']
+            # median - lab
+            values[5] = results['Mediana Pesada']['Color 1']['LAB'].tolist()
+            # median - execution time
+            values[7] = f"{results['Mediana Pesada']['Tiempo Ejecución (ms)']:.2f}"
+
+            # k-means - pantone
+            values[8] = results['K-Means']['Color 1']['Pantone Name']
+            # k-means - lab
+            values[9] = results['K-Means']['Color 1']['LAB'].tolist()
+            # k-means - execution time
+            values[11] = f"{results['K-Means']['Tiempo Ejecución (ms)']:.2f}"
+
+            # soft voting - pantone
+            values[12] = results['Soft Voting']['Color 1']['Pantone Name']
+            # soft voting - lab
+            values[13] = results['Soft Voting']['Color 1']['LAB'].tolist()
+            # soft voting - execution time
+            values[15] = f"{results['Soft Voting']['Tiempo Ejecución (ms)']:.2f}"
+
+            # calibration file
+            values[16] = config['calibration']['calibration_params_path']
+
+            if self.id_name is not None:
+                # id
+                values[1] = self.id_name
+                self.id_name = None
+
+                search = self.processing.searchPantoneInDatabase(values[1].upper())
+
+                if search is not None:
+                    # guide - pantone
+                    values[2] = search[0]
+                    # guide - lab
+                    values[3] = search[1].tolist()
+
+                    # median - ΔE00
+                    delta = deltaE_ciede2000(np.array(values[5], dtype=np.float32),
+                                                np.array(values[3], dtype=np.float32))
+                    values[6] = f"{delta:.2f}"
+                    # k-means - ΔE00
+                    delta = deltaE_ciede2000(np.array(values[9], dtype=np.float32),
+                                                np.array(values[3], dtype=np.float32))
+                    values[10] = f"{delta:.2f}"
+                    # soft voting - ΔE00
+                    delta = deltaE_ciede2000(np.array(values[13], dtype=np.float32),
+                                                np.array(values[3], dtype=np.float32))
+                    values[14] = f"{delta:.2f}"
+
+            # -------- BUILD EXCEL ---------
+
+            os.makedirs(self.doc.export_folder, exist_ok=True)
+            excel_path = os.path.join(self.doc.export_folder, "color_methods_comparison.xlsx")
+            new_data: dict = {}
+            
+            for h, v in zip(headers, values):
+                new_data[f"{h}"] = f"{v}"
+            
+            new_df = pd.DataFrame([new_data])
+            try:
+                if os.path.exists(excel_path):
+                    # Leer el archivo existente
+                    existing_df = pd.read_excel(excel_path)
+                    
+                    # Concatenar los datos existentes con los nuevos
+                    final_df = pd.concat([existing_df, new_df], ignore_index=True)
+                    final_df = final_df.astype(str)
+                else:
+                    # Si no existe, usar solo los nuevos datos
+                    final_df = new_df
+                
+                # Guardar el DataFrame en Excel
+                final_df.to_excel(excel_path, index=False, engine='openpyxl')
+
+                msg:str = f"Datos guardados correctamente:\n- Excel: {excel_path}"
+
+                # Mostrar mensaje de éxito
+                QMessageBox.information(self, "Completado", msg)
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error", 
+                                f"Error al guardar los datos: {str(e)}")
+        else:
+            QMessageBox.warning(self, 
+                                "Mascara no encontrada", 
+                                "Por favor, correr la segmentación antes de exportar la imagen.")
+    
+    def addMeasureColorComparation(self) -> None:
+        if self.doc.getIsSegmentedFlag():
+            os.makedirs(self.doc.export_folder, exist_ok=True)
+            excel_path = os.path.join(self.doc.export_folder, "color_table_comparation.xlsx")
+
+            results: dict = self.doc.getColorMethods(self.config_manager, self.processing)
+            date: datetime = datetime.now()
+
+            new_data: dict = {
+                                "Marca Temporal": date.strftime("%Y-%m-%d %H:%M:%S"),
+                                "Mediana Color 1": results['Mediana Pesada']['Color 1']['Pantone Name'],
+                                "Mediana Color 2": results['Mediana Pesada']['Color 2']['Pantone Name'],
+                                "Mediana Color 3": results['Mediana Pesada']['Color 3']['Pantone Name'],
+                                "Mediana Tiempo Ejecución (ms)": f"{results['Mediana Pesada']['Tiempo Ejecución (ms)']:.2f}",
+                                "K-Means Color 1": results['K-Means']['Color 1']['Pantone Name'],
+                                "K-Means Color 2": results['K-Means']['Color 2']['Pantone Name'],
+                                "K-Means Color 3": results['K-Means']['Color 3']['Pantone Name'],
+                                "K-Means Tiempo Ejecución (ms)": f"{results['K-Means']['Tiempo Ejecución (ms)']:.2f}",
+                                "Soft Voting Color 1": results['Soft Voting']['Color 1']['Pantone Name'],
+                                "Soft Voting Color 2": results['Soft Voting']['Color 2']['Pantone Name'],
+                                "Soft Voting Color 3": results['Soft Voting']['Color 3']['Pantone Name'],
+                                "Soft Voting Tiempo Ejecución (ms)": f"{results['Soft Voting']['Tiempo Ejecución (ms)']:.2f}"
+                            }
+
+            new_df = pd.DataFrame([new_data])
+
+            try:
+                if os.path.exists(excel_path):
+                    # Leer el archivo existente
+                    existing_df = pd.read_excel(excel_path)
+                    
+                    # Concatenar los datos existentes con los nuevos
+                    final_df = pd.concat([existing_df, new_df], ignore_index=True)
+                    final_df = final_df.astype(str)
+                else:
+                    # Si no existe, usar solo los nuevos datos
+                    final_df = new_df
+                
+                # Guardar el DataFrame en Excel
+                final_df.to_excel(excel_path, index=False, engine='openpyxl')
+
+                msg:str = f"Datos guardados correctamente:\n- Excel: {excel_path}"
+
+                # Mostrar mensaje de éxito
+                QMessageBox.information(self, "Completado", msg)
+                
+            except Exception as e:
+                QMessageBox.critical(self, "Error", 
+                                f"Error al guardar los datos: {str(e)}")
+        else:
+            QMessageBox.warning(self, 
+                                "Mascara no encontrada", 
+                                "Por favor, correr la segmentación antes de exportar la imagen.")
+    
+    
     def saveRecord(self) -> None:
         id = self.input_id.text().strip()
         if not id:
             QMessageBox.warning(self, "Campo vacío", "Por favor ingrese un identificador antes de guardar.")
+            self.id_name = None
             return None
-        
+
+        self.id_name = id
+
         colors: dict = self.processing.getTopColors()
         config = self.config_manager.getConfig()
         results_folder = config['export']['results']['folder_path']
@@ -2850,6 +3078,7 @@ class MainWindow(QMainWindow):
                             "Identificador": [id],
                             "Fecha Registro": date.strftime("%Y-%m-%d %H:%M:%S"),
                             "Ubicación Imagen": [images_folder],
+                            "Archivo Calibración": config['calibration']['calibration_params_path'],
                             "Método Color": config['color']['method']['selected_method']
                         }
 
@@ -3015,6 +3244,7 @@ class MainWindow(QMainWindow):
                                                             min_weight_threshold=config['color']['method']['threshold_softvoting'])
                 self.updateColorDisplay()
                 self.doc.setIsSegmentedFlag(True)
+                self.id_name = None
             else:
                 QMessageBox.warning(self, 
                                 "Prompts no encontrados", 

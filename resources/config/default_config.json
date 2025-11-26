@@ -30,7 +30,7 @@
             "mask_color": [158, 16, 127]
         },
         "guided_filter": {
-            "radius": 2,
+            "radius": 4,
             "epsilon": 0.3
         }
     },
