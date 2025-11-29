@@ -9,3 +9,4 @@ resources/calibration/params_pantone.pickle
 resources/calibration/color_checker_test_pantone.png
 resources/calibration/color_checker.npy
 resources/calibration/calibration_logs.xlsx
+resources/calibration/params_amarillo.pickle

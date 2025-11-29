@@ -322,9 +322,9 @@ class Calibration():
         self.params_path = "resources/calibration/default_calibration_params.pickle"
         self.config = config
         self.color_checker_raw_image = None
-        self.color_patches = None
+        self.color_patches_raw = None
+        self.color_patches_calibrated = None
         self.img_draw = None
-        self.measures_delta_e00 = {}
         self.model = None
         self.reference_LABs = np.array([[37.986, 13.555, 14.059],
                                         [65.711, 18.13, 17.81],
@@ -366,8 +366,12 @@ class Calibration():
     def getDrawImage(self):
         return self.img_draw
             
-    def detectColorChecker(self, drawPatches: bool = False) -> None:
-        imageBGR = cv2.cvtColor(self.color_checker_raw_image, cv2.COLOR_RGB2BGR)
+    def detectColorChecker(self, drawPatches: bool = False, detectCalibratedImg: bool = False, saveCalibratedPatches: bool = False) -> None:
+
+        if detectCalibratedImg:
+            imageBGR = cv2.cvtColor(self.img_draw, cv2.COLOR_RGB2BGR)
+        else:
+            imageBGR = cv2.cvtColor(self.color_checker_raw_image, cv2.COLOR_RGB2BGR)
 
         # Create a ColorChecker detector
         detector = cv2.mcc.CCheckerDetector_create()
@@ -391,19 +395,12 @@ class Calibration():
             # Get the detected color patches and rearrange them
             chartsRGB = checker.getChartsRGB()
             width, height = chartsRGB.shape[:2]
-            self.color_patches = chartsRGB[:, 1].copy().reshape(int(width / 3), 1, 3) / 255.0
 
-            # Convertir parches detectados a LAB
-            patches_rgb = self.color_patches.reshape(24, 3)
-            detected_lab = rgb2lab(patches_rgb[np.newaxis, :, :]).squeeze()
-            delta_e00_values = deltaE_ciede2000(self.reference_LABs, detected_lab)
+            if saveCalibratedPatches:
+                self.color_patches_calibrated = chartsRGB[:, 1].copy().reshape(int(width / 3), 1, 3) / 255.0
+            else:
+                self.color_patches_raw = chartsRGB[:, 1].copy().reshape(int(width / 3), 1, 3) / 255.0
 
-            # Calcular promedio
-            self.measures_delta_e00["mean"] = np.mean(delta_e00_values)
-            self.measures_delta_e00["min"] = np.min(delta_e00_values)
-            self.measures_delta_e00["max"] = np.max(delta_e00_values)
-            self.measures_delta_e00["values"] = delta_e00_values
-            
     
     def setPathcalibrationParams(self, file_path) -> None:
         self.params_path = file_path
@@ -411,7 +408,7 @@ class Calibration():
     def saveCalibrationParams(self) -> None:
         # Save the color patches and configuration to a pickle file
         params = {
-            'color_patches': self.color_patches
+            'color_patches': self.color_patches_raw
         }
         with open(self.params_path, 'wb') as f:
             pickle.dump(params, f)
@@ -433,9 +430,9 @@ class Calibration():
                 print("Error")
 
             # Reconstruct the color correction model from parameters
-            self.color_patches = params['color_patches']
+            self.color_patches_raw = params['color_patches']
 
-        self.model = cv2.ccm_ColorCorrectionModel(self.color_patches, cv2.ccm.COLORCHECKER_Macbeth)
+        self.model = cv2.ccm_ColorCorrectionModel(self.color_patches_raw, cv2.ccm.COLORCHECKER_Macbeth)
         
         # Configure the model
         self.model.setColorSpace(cv2.ccm.COLOR_SPACE_sRGB)
@@ -451,11 +448,23 @@ class Calibration():
 
 
     def getMeasuresDeltaE00(self) -> float:
-        return self.measures_delta_e00
+        self.detectColorChecker(drawPatches=False, detectCalibratedImg=True, saveCalibratedPatches=True)
+        # Convertir parches detectados a LAB
+        patches_rgb = self.color_patches_calibrated.reshape(24, 3)
+        detected_lab = rgb2lab(patches_rgb[np.newaxis, :, :]).squeeze()
+        delta_e00_values = deltaE_ciede2000(self.reference_LABs, detected_lab)
+        measures_delta_e00 = {
+                            'mean': np.mean(delta_e00_values),
+                            'std dev': np.std(delta_e00_values),
+                            'min': np.min(delta_e00_values),
+                            'max': np.max(delta_e00_values),
+                            'values': delta_e00_values
+                            }
+        return measures_delta_e00
 
     def clearAllCalibration(self) -> None:
         self.color_checker_raw_image = None
-        self.color_patches = None
+        self.color_patches_raw = None
         self.img_draw = None
         self.model = None
     
@@ -1987,7 +1996,7 @@ class MainWindow(QMainWindow):
 
         # Panel lateral derecho
         self.side_panel = QStackedWidget()
-        self.side_panel.setFixedWidth(440)
+        self.side_panel.setFixedWidth(460)
         self.operationWidget = self.createSideOperationWidget()
         self.side_panel.addWidget(self.operationWidget)
 
@@ -2523,12 +2532,6 @@ class MainWindow(QMainWindow):
 
         layout_params.addWidget(group_box_detect)
 
-        # ------------ Delta Labels ------------
-        self.label_measures_delta = QLabel("")
-        self.label_measures_delta.setStyleSheet("padding: 0px 0px 0px 3px;")
-        self.label_measures_delta.hide()
-        layout_params.addWidget(self.label_measures_delta)
-
         # ------ Group Box - Save and Apply
         self.group_box_save_apply = QGroupBox("")
         self.group_box_save_apply.setStyleSheet("padding-top: 0px;")
@@ -2541,16 +2544,24 @@ class MainWindow(QMainWindow):
         #input_file_name.setFixedHeight(30)
         #layout_save_apply.addWidget(input_file_name)
 
-        label_save_apply = QLabel("Guardar archivo y aplicar cambios")
+        label_save_apply = QLabel("Aplicar matriz de corrección de color")
         layout_save_apply.addWidget(label_save_apply)
 
-        button_save_apply = QPushButton("Guardar y Aplicar")
-        button_save_apply.clicked.connect(self.saveAndApplyClicked)
+        button_save_apply = QPushButton("Aplicar")
+        button_save_apply.clicked.connect(self.applyClicked)
         button_save_apply.setFixedHeight(37)
         layout_save_apply.addWidget(button_save_apply)
 
         self.group_box_save_apply.hide()
         layout_params.addWidget(self.group_box_save_apply)
+
+        # ------------ Delta Labels ------------
+        self.label_measures_delta = QLabel("")
+        self.label_measures_delta.setStyleSheet("padding: 0px 0px 0px 2px;")
+        self.label_measures_delta.hide()
+        layout_params.addWidget(self.label_measures_delta)
+
+        self.deltas: dict = None
 
         self.group_box_params.hide()
         layout.addWidget(self.group_box_params)
@@ -2572,19 +2583,29 @@ class MainWindow(QMainWindow):
         self.radio_buttons.hide()
         layout.addWidget(self.radio_buttons)
 
-
-        # ------------ Cancel Button ------------
+        # ------------ Finish Buttons ------------
         #line2 = QFrame()
         #line2.setFrameShape(QFrame.NoFrame)
         #line2.setFixedHeight(2)
         #layout.addWidget(line2)
 
-        self.button_finish = QPushButton("Cancelar")
-        self.final_status_calibration = False
-        self.button_finish.clicked.connect(self.finishCalibrationClicked)
-        self.button_finish.setFixedHeight(40)
+        self.finish_buttons = QWidget()
+        layout_finish_buttons = QHBoxLayout(self.finish_buttons)
+        layout_finish_buttons.setContentsMargins(0, 0, 0, 0)
+        layout_finish_buttons.setSpacing(7)
 
-        layout.addWidget(self.button_finish)
+        self.button_save = QPushButton("Guardar Archivo")
+        self.button_save.clicked.connect(self.saveClicked)
+        self.button_save.setFixedHeight(50)
+        self.button_save.hide()
+        layout_finish_buttons.addWidget(self.button_save)
+
+        self.button_cancel = QPushButton("Cancelar")
+        self.button_cancel.clicked.connect(self.cancelClicked)
+        self.button_cancel.setFixedHeight(50)
+        layout_finish_buttons.addWidget(self.button_cancel)
+
+        layout.addWidget(self.finish_buttons)
 
         return widget
     
@@ -2636,8 +2657,7 @@ class MainWindow(QMainWindow):
         self.label_measures_delta.hide()
         self.group_box_save_apply.hide()
         self.radio_buttons.hide()
-        self.button_finish.setText("Cancelar")
-        self.final_status_calibration = False
+        self.button_save.hide()
 
         QMessageBox.information(
                     self,
@@ -2681,25 +2701,33 @@ class MainWindow(QMainWindow):
             self.group_box_save_apply.hide()
             self.radio_buttons.hide()
             self.label_measures_delta.hide()
-            self.button_finish.setText("Cancelar")
-            self.final_status_calibration = False
+            self.button_save.hide()
 
     def detectColorCheckerClicked(self) -> None:
         self.calibration.detectColorChecker(drawPatches=True)
         self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.calibration.getDrawImage()))
 
-        self.calibration.reconstructModel()
-        measures_delta_e00: dict = self.calibration.getMeasuresDeltaE00()
-        label: str = f'<span style="text-decoration: overline;">ΔE00</span> : {measures_delta_e00["mean"]:.2f}' \
-                    f'\u00A0\u00A0\u00A0\u00A0\u00A0|\u00A0\u00A0\u00A0' \
-                    f'min (ΔE00) : {measures_delta_e00["min"]:.2f}' \
-                    f'\u00A0\u00A0\u00A0\u00A0\u00A0|\u00A0\u00A0\u00A0' \
-                    f'max (ΔE00) : {measures_delta_e00["max"]:.2f}'
-        self.label_measures_delta.setText(label)
-        self.label_measures_delta.show()
         self.group_box_save_apply.show()
 
-    def saveAndApplyClicked(self) -> None:
+    def applyClicked(self) -> None:
+        self.calibration.reconstructModel()
+        # Apply calibration and show it
+        img = self.calibration.applyColorCorrection(self.calibration.getRawImage())
+        self.calibration.setDrawImage(img)
+        self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(img))
+        self.deltas = self.calibration.getMeasuresDeltaE00()
+        label: str = f'<span style="text-decoration: overline;">ΔE00</span> : {self.deltas['mean']:.2f}' \
+                    f'\u00A0\u00A0|\u00A0\u00A0' \
+                    f'σ (ΔE00) : {self.deltas['std dev']:.2f}' \
+                    f'\u00A0\u00A0|\u00A0\u00A0' \
+                    f'min/max (ΔE00) : {self.deltas['min']:.2f} / {self.deltas['max']:.2f}'
+        self.label_measures_delta.setText(label)
+        # Update GUI
+        self.label_measures_delta.show()
+        self.radio_buttons.show()
+        self.button_save.show()        
+
+    def saveClicked(self) -> None:
         file_path, _ = QFileDialog.getSaveFileName(
                                     self,
                                     "Guardar archivo como",
@@ -2707,30 +2735,25 @@ class MainWindow(QMainWindow):
                                     "Archivos PICKLE (*.pickle)"
                                 )
         if file_path:
-            self.final_status_calibration = True
             # Update config json file
             self.config_manager.setValue("calibration", "calibration_params_path", file_path)
             # Save calibration params
             self.calibration.setPathcalibrationParams(file_path)
             self.calibration.saveCalibrationParams()
-            # Apply calibration and show it
-            img = self.calibration.applyColorCorrection(self.calibration.getRawImage())
-            self.calibration.setDrawImage(img)
-            self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(img))
 
             # Create excel report
-            excel_path = "resources/calibration/calibration_logs.xlsx"
+            excel_path = "exports/calibration_logs.xlsx"
 
-            deltas: dict = self.calibration.getMeasuresDeltaE00()
             date: datetime = datetime.now()
 
             new_data: dict = {
                                 "Marca Temporal": date.strftime("%Y-%m-%d %H:%M:%S"),
                                 "Archivo Calibración": file_path,
-                                "ΔE00 Promedio": f"{deltas['mean']:.2f}",
-                                "ΔE00 Mínimo": f"{deltas['min']:.2f}",
-                                "ΔE00 Máximo": f"{deltas['max']:.2f}",
-                                "ΔE00 Parches": f"{deltas['values'].tolist()}"
+                                "ΔE00 Promedio": f"{self.deltas['mean']:.2f}",
+                                "ΔE00 Desviación Estándar": f"{self.deltas['std dev']:.2f}",
+                                "ΔE00 Mínimo": f"{self.deltas['min']:.2f}",
+                                "ΔE00 Máximo": f"{self.deltas['max']:.2f}",
+                                "ΔE00 Parches": f"{self.deltas['values'].tolist()}"
                             }
 
             new_df = pd.DataFrame([new_data])
@@ -2749,28 +2772,35 @@ class MainWindow(QMainWindow):
                 
                 # Guardar el DataFrame en Excel
                 final_df.to_excel(excel_path, index=False, engine='openpyxl')
+                time.sleep(1)
+
+                msg = "El archivo de calibración (pickle) se ha guardado correctamente."
+
+                # Mostrar mensaje de éxito
+                QMessageBox.information(self, "Completado", msg)
+
+                if self.viewer.scene:
+                    self.viewer.scene.clear()
+
+                self.calibration.clearAllCalibration()
+                self.restoreOperationWidget()
+
+                # Volver al preview de segmentación
+                self.stopPreview()
+                self.startPreviewSegmentation()
                 
             except Exception as e:
                 QMessageBox.critical(self, "Error", 
                                 f"Error al guardar los datos: {str(e)}")
-
-            # Update GUI
-            self.radio_buttons.show()
-            self.button_finish.setText("Finalizar")
             
-    def finishCalibrationClicked(self) -> None:
-        if self.final_status_calibration:
-            msg = "La calibración de color se ha aplicado correctamente."
-        else:
-            msg = "La calibración de color ha sido cancelada por el usuario."
+    def cancelClicked(self) -> None:
+        msg = "La calibración de color ha sido cancelada por el usuario."
 
-        QMessageBox.information(
-                        self,
-                        "Resultado calibración",
-                        msg
-                    )
+        QMessageBox.information(self, "Cancelado", msg)
+
         if self.viewer.scene:
             self.viewer.scene.clear()
+            
         self.calibration.clearAllCalibration()
         self.restoreOperationWidget()
 
@@ -2966,60 +2996,7 @@ class MainWindow(QMainWindow):
                 
                 # Guardar el DataFrame en Excel
                 final_df.to_excel(excel_path, index=False, engine='openpyxl')
-
-                msg:str = f"Datos guardados correctamente:\n- Excel: {excel_path}"
-
-                # Mostrar mensaje de éxito
-                QMessageBox.information(self, "Completado", msg)
-                
-            except Exception as e:
-                QMessageBox.critical(self, "Error", 
-                                f"Error al guardar los datos: {str(e)}")
-        else:
-            QMessageBox.warning(self, 
-                                "Mascara no encontrada", 
-                                "Por favor, correr la segmentación antes de exportar la imagen.")
-    
-    def addMeasureColorComparation(self) -> None:
-        if self.doc.getIsSegmentedFlag():
-            os.makedirs(self.doc.export_folder, exist_ok=True)
-            excel_path = os.path.join(self.doc.export_folder, "color_table_comparation.xlsx")
-
-            results: dict = self.doc.getColorMethods(self.config_manager, self.processing)
-            date: datetime = datetime.now()
-
-            new_data: dict = {
-                                "Marca Temporal": date.strftime("%Y-%m-%d %H:%M:%S"),
-                                "Mediana Color 1": results['Mediana Pesada']['Color 1']['Pantone Name'],
-                                "Mediana Color 2": results['Mediana Pesada']['Color 2']['Pantone Name'],
-                                "Mediana Color 3": results['Mediana Pesada']['Color 3']['Pantone Name'],
-                                "Mediana Tiempo Ejecución (ms)": f"{results['Mediana Pesada']['Tiempo Ejecución (ms)']:.2f}",
-                                "K-Means Color 1": results['K-Means']['Color 1']['Pantone Name'],
-                                "K-Means Color 2": results['K-Means']['Color 2']['Pantone Name'],
-                                "K-Means Color 3": results['K-Means']['Color 3']['Pantone Name'],
-                                "K-Means Tiempo Ejecución (ms)": f"{results['K-Means']['Tiempo Ejecución (ms)']:.2f}",
-                                "Soft Voting Color 1": results['Soft Voting']['Color 1']['Pantone Name'],
-                                "Soft Voting Color 2": results['Soft Voting']['Color 2']['Pantone Name'],
-                                "Soft Voting Color 3": results['Soft Voting']['Color 3']['Pantone Name'],
-                                "Soft Voting Tiempo Ejecución (ms)": f"{results['Soft Voting']['Tiempo Ejecución (ms)']:.2f}"
-                            }
-
-            new_df = pd.DataFrame([new_data])
-
-            try:
-                if os.path.exists(excel_path):
-                    # Leer el archivo existente
-                    existing_df = pd.read_excel(excel_path)
-                    
-                    # Concatenar los datos existentes con los nuevos
-                    final_df = pd.concat([existing_df, new_df], ignore_index=True)
-                    final_df = final_df.astype(str)
-                else:
-                    # Si no existe, usar solo los nuevos datos
-                    final_df = new_df
-                
-                # Guardar el DataFrame en Excel
-                final_df.to_excel(excel_path, index=False, engine='openpyxl')
+                time.sleep(1)
 
                 msg:str = f"Datos guardados correctamente:\n- Excel: {excel_path}"
 
