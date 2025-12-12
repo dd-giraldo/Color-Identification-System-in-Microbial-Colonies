@@ -366,7 +366,7 @@ class Calibration():
     def getDrawImage(self):
         return self.img_draw
             
-    def detectColorChecker(self, drawPatches: bool = False, detectCalibratedImg: bool = False, saveCalibratedPatches: bool = False) -> None:
+    def detectColorChecker(self, drawPatches: bool = False, detectCalibratedImg: bool = False, saveCalibratedPatches: bool = False) -> bool:
 
         if detectCalibratedImg:
             imageBGR = cv2.cvtColor(self.img_draw, cv2.COLOR_RGB2BGR)
@@ -380,7 +380,7 @@ class Calibration():
         detected = detector.process(imageBGR, cv2.mcc.MCC24, 1)
         
         if not detected:
-            return None
+            return False
 
         # Get the list of detected ColorCheckers
         checkers = detector.getListColorChecker()
@@ -401,6 +401,7 @@ class Calibration():
             else:
                 self.color_patches_raw = chartsRGB[:, 1].copy().reshape(int(width / 3), 1, 3) / 255.0
 
+        return True
     
     def setPathcalibrationParams(self, file_path) -> None:
         self.params_path = file_path
@@ -448,19 +449,20 @@ class Calibration():
 
 
     def getMeasuresDeltaE00(self) -> float:
-        self.detectColorChecker(drawPatches=False, detectCalibratedImg=True, saveCalibratedPatches=True)
-        # Convertir parches detectados a LAB
-        patches_rgb = self.color_patches_calibrated.reshape(24, 3)
-        detected_lab = rgb2lab(patches_rgb[np.newaxis, :, :]).squeeze()
-        delta_e00_values = deltaE_ciede2000(self.reference_LABs, detected_lab)
-        measures_delta_e00 = {
-                            'mean': np.mean(delta_e00_values),
-                            'std dev': np.std(delta_e00_values),
-                            'min': np.min(delta_e00_values),
-                            'max': np.max(delta_e00_values),
-                            'values': delta_e00_values
-                            }
-        return measures_delta_e00
+        is_detected = self.detectColorChecker(drawPatches=False, detectCalibratedImg=True, saveCalibratedPatches=True)
+        if is_detected:
+            # Convertir parches detectados a LAB
+            patches_rgb = self.color_patches_calibrated.reshape(24, 3)
+            detected_lab = rgb2lab(patches_rgb[np.newaxis, :, :]).squeeze()
+            delta_e00_values = deltaE_ciede2000(self.reference_LABs, detected_lab)
+            measures_delta_e00 = {
+                                'mean': np.mean(delta_e00_values),
+                                'std dev': np.std(delta_e00_values),
+                                'min': np.min(delta_e00_values),
+                                'max': np.max(delta_e00_values),
+                                'values': delta_e00_values
+                                }
+            return measures_delta_e00
 
     def clearAllCalibration(self) -> None:
         self.color_checker_raw_image = None
@@ -2704,10 +2706,14 @@ class MainWindow(QMainWindow):
             self.button_save.hide()
 
     def detectColorCheckerClicked(self) -> None:
-        self.calibration.detectColorChecker(drawPatches=True)
-        self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.calibration.getDrawImage()))
-
-        self.group_box_save_apply.show()
+        is_detected = self.calibration.detectColorChecker(drawPatches=True)
+        if is_detected:
+            self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.calibration.getDrawImage()))
+            self.group_box_save_apply.show()
+        else:
+            QMessageBox.warning(self, 
+                                "Parches de color no encontrados", 
+                                "Por favor, asegurar la correcta ubicación del Color Checker.")
 
     def applyClicked(self) -> None:
         self.calibration.reconstructModel()
@@ -3162,7 +3168,7 @@ class MainWindow(QMainWindow):
 
     def openImage(self) -> None:
         self.source_img_path, _ = QFileDialog.getOpenFileName(
-            self, "Seleccionar Imagen", "resources/test_images", "Archivos de Imagen (*.png *.npy *.dng)"
+            self, "Seleccionar Imagen", "resources", "Archivos de Imagen (*.png *.npy)"
         )
         if self.source_img_path:
             # Detener preview al abrir imagen desde archivo
