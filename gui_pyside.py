@@ -26,6 +26,12 @@ import matplotlib.patches as mpatches
 
 class Camera():
     def __init__(self):
+        """
+        Inicializa la cámara Picamera2 con configuraciones de captura y preview.
+
+        Configura los modos de captura de alta resolución y preview de baja resolución
+        para los módulos de calibración y segmentación.
+        """
         self.controls = {}
         self.picam2 = Picamera2()
         self.capture_config = self.picam2.create_still_configuration(
@@ -44,9 +50,22 @@ class Camera():
         self.is_preview_mode = False
         
     def getIsPreviewFlag(self) -> bool:
+        """
+        Obtiene el estado actual del modo preview de la cámara.
+
+        Returns:
+            bool: True si la cámara está en modo preview, False en caso contrario.
+        """
         return self.is_preview_mode
 
     def setControls(self, config):
+        """
+        Configura los controles de la cámara según la configuración proporcionada.
+
+        Args:
+            config (dict): Diccionario con los parámetros de configuración de la cámara,
+                          incluyendo AEC, AWB y ajustes de tuning.
+        """
         self.controls = {}
         self.controls = {
             "AeEnable": config['camera']['AEC']['aec'],
@@ -70,7 +89,13 @@ class Camera():
         self.picam2.set_controls(self.controls)
 
     def startPreview(self, preview_type='segmentation'):
-        """Inicia el modo preview con configuración de baja resolución'"""
+        """
+        Inicia el modo preview con configuración de baja resolución.
+
+        Args:
+            preview_type (str): Tipo de preview a iniciar. Puede ser 'segmentation' (720x720)
+                               o 'calibration' (720x540). Por defecto es 'segmentation'.
+        """
         if not self.picam2.started:
             # Configurar para preview de baja resolución
             if preview_type == 'segmentation':
@@ -83,14 +108,26 @@ class Camera():
             self.is_preview_mode = True
     
     def stopPreview(self):
+        """
+        Detiene el modo preview de la cámara si está activo.
+
+        Finaliza la captura de video en tiempo real y actualiza el estado del flag de preview.
+        """
         if self.picam2.started:
-            """Detiene el modo preview"""
             self.picam2.stop()
             self.is_preview_mode = False
     
     def getPreviewFrame(self, preview_type='segmentation'):
-        """Captura un frame del preview
-        preview_type: 'segmentation' (2464x2464 centrado) o 'calibration' (3280x2464)"""
+        """
+        Captura un frame del preview en baja resolución.
+
+        Args:
+            preview_type (str): Tipo de preview activo. 'segmentation' para formato cuadrado
+                               o 'calibration' para formato rectangular completo.
+
+        Returns:
+            numpy.ndarray: Frame capturado en formato RGB, o None si la cámara no está activa.
+        """
 
         if not self.picam2.started:
             return None
@@ -101,6 +138,18 @@ class Camera():
         return frame
 
     def capture(self, n_captures=10):
+        """
+        Captura una imagen de alta resolución promediando múltiples capturas.
+
+        Realiza múltiples capturas consecutivas y las promedia para reducir el ruido
+        y mejorar la calidad de la imagen final.
+
+        Args:
+            n_captures (int): Número de capturas a promediar. Por defecto es 10.
+
+        Returns:
+            numpy.ndarray: Imagen RGB promediada en alta resolución (3280x2464).
+        """
         self.picam2.configure(self.capture_config)
         self.picam2.set_controls(self.controls)
         
@@ -124,6 +173,11 @@ class Camera():
 
 class Documentation():
     def __init__(self) -> None:
+        """
+        Inicializa el gestor de documentación para exportar análisis visuales.
+
+        Configura los parámetros de exportación de imágenes y el estado de segmentación.
+        """
         self.dpi = 300
         self.is_segmented_flag = False
         self.list_r = [12, 8, 4, 2]
@@ -131,12 +185,38 @@ class Documentation():
         self.export_folder = "exports"
     
     def getIsSegmentedFlag(self):
+        """
+        Obtiene el estado de segmentación actual.
+
+        Returns:
+            bool: True si hay una segmentación activa, False en caso contrario.
+        """
         return self.is_segmented_flag
-    
+
     def setIsSegmentedFlag(self, value):
+        """
+        Establece el estado de segmentación.
+
+        Args:
+            value (bool): True para indicar que hay una segmentación activa,
+                         False en caso contrario.
+        """
         self.is_segmented_flag = value
 
     def createGuidedFilterComparisonImage(self, processing):
+        """
+        Crea una imagen comparativa de diferentes parámetros del filtro guiado.
+
+        Genera una grilla de imágenes mostrando el efecto de diferentes combinaciones
+        de radio (r) y epsilon (ε) en el filtrado de la máscara de segmentación.
+
+        Args:
+            processing (ImageProcessing): Instancia de procesamiento de imagen con la
+                                         segmentación activa.
+
+        Returns:
+            str: Ruta de la imagen exportada.
+        """
         rows: int = len(self.list_r)
         columns: int = len(self.list_eps)
         # Crea una figura y una cuadrícula de subgráficos (axes)
@@ -186,6 +266,21 @@ class Documentation():
 
     @staticmethod
     def getColorMethods(config_manager, processing) -> dict:
+        """
+        Ejecuta y compara los tres métodos de estimación de color.
+
+        Aplica los métodos de Mediana Pesada, K-Means y Soft Voting para estimar
+        el color predominante de la región segmentada, midiendo el tiempo de ejecución
+        de cada uno.
+
+        Args:
+            config_manager (ConfigManager): Gestor de configuración con parámetros de los métodos.
+            processing (ImageProcessing): Instancia con la imagen y máscara de segmentación.
+
+        Returns:
+            dict: Diccionario con los resultados de cada método, incluyendo colores
+                  y tiempos de ejecución.
+        """
         config = config_manager.getConfig()
         results: dict = {}
         start_time: float = 0.0
@@ -218,7 +313,20 @@ class Documentation():
         return results
 
     def createColorMethodsComparationImage(self, config_manager, processing) -> str:
-        
+        """
+        Crea una imagen comparativa de los tres métodos de estimación de color.
+
+        Genera una visualización lado a lado mostrando el color predominante detectado
+        por cada método, junto con sus valores LAB, RGB, ΔE00 y tiempo de ejecución.
+
+        Args:
+            config_manager (ConfigManager): Gestor de configuración.
+            processing (ImageProcessing): Instancia con la segmentación activa.
+
+        Returns:
+            str: Ruta de la imagen exportada.
+        """
+
         results: dict = self.getColorMethods(config_manager, processing)
 
         # Crear la figura con 3 columnas
@@ -319,6 +427,15 @@ class Documentation():
 
 class Calibration():
     def __init__(self, config) -> None:
+        """
+        Inicializa el sistema de calibración de color con ColorChecker.
+
+        Configura los parámetros de calibración y carga los valores de referencia LAB
+        de los 24 parches del Macbeth ColorChecker.
+
+        Args:
+            config (ConfigManager): Gestor de configuración del sistema.
+        """
         self.params_path = "resources/calibration/default_calibration_params.pickle"
         self.config = config
         self.color_checker_raw_image = None
@@ -352,21 +469,65 @@ class Calibration():
                                         [20.461, -0.079, -0.973]])
 
     def getParamsPath(self) -> str:
+        """
+        Obtiene la ruta del archivo de parámetros de calibración.
+
+        Returns:
+            str: Ruta del archivo pickle con los parámetros de calibración.
+        """
         return self.params_path
-    
+
     def loadRawImage(self, img) -> None:
+        """
+        Carga la imagen cruda del ColorChecker para calibración.
+
+        Args:
+            img (numpy.ndarray): Imagen RGB del ColorChecker sin calibrar.
+        """
         self.color_checker_raw_image = img
-        
+
     def getRawImage(self):
+        """
+        Obtiene la imagen cruda del ColorChecker.
+
+        Returns:
+            numpy.ndarray: Imagen RGB sin calibrar.
+        """
         return self.color_checker_raw_image
 
     def setDrawImage(self, img) -> None:
+        """
+        Establece la imagen de dibujo para visualización.
+
+        Args:
+            img (numpy.ndarray): Imagen RGB con marcas de detección o calibrada.
+        """
         self.img_draw = img
 
     def getDrawImage(self):
+        """
+        Obtiene la imagen de dibujo actual.
+
+        Returns:
+            numpy.ndarray: Imagen RGB con visualizaciones.
+        """
         return self.img_draw
             
     def detectColorChecker(self, drawPatches: bool = False, detectCalibratedImg: bool = False, saveCalibratedPatches: bool = False) -> bool:
+        """
+        Detecta automáticamente el Macbeth ColorChecker en la imagen.
+
+        Utiliza el detector de OpenCV para localizar los 24 parches de color
+        y extraer sus valores RGB promedio.
+
+        Args:
+            drawPatches (bool): Si True, dibuja marcas sobre los parches detectados.
+            detectCalibratedImg (bool): Si True, detecta parches en la imagen calibrada.
+            saveCalibratedPatches (bool): Si True, guarda los parches post-calibración.
+
+        Returns:
+            bool: True si la detección fue exitosa, False en caso contrario.
+        """
 
         if detectCalibratedImg:
             imageBGR = cv2.cvtColor(self.img_draw, cv2.COLOR_RGB2BGR)
@@ -404,9 +565,21 @@ class Calibration():
         return True
     
     def setPathcalibrationParams(self, file_path) -> None:
+        """
+        Establece la ruta del archivo de parámetros de calibración.
+
+        Args:
+            file_path (str): Ruta completa del archivo pickle a utilizar.
+        """
         self.params_path = file_path
 
     def saveCalibrationParams(self) -> None:
+        """
+        Guarda los parámetros de calibración en un archivo pickle.
+
+        Exporta los parches de color detectados para uso posterior en la
+        corrección de color de nuevas imágenes.
+        """
         # Save the color patches and configuration to a pickle file
         params = {
             'color_patches': self.color_patches_raw
@@ -415,6 +588,16 @@ class Calibration():
             pickle.dump(params, f)
     
     def reconstructModel(self, fromParamsFile: bool = False):
+        """
+        Reconstruye el modelo de corrección de color.
+
+        Crea o recarga el modelo CCM (Color Correction Matrix) utilizando los
+        parches detectados o cargados desde archivo.
+
+        Args:
+            fromParamsFile (bool): Si True, carga los parámetros desde el archivo pickle.
+                                   Si False, usa los parches detectados en memoria.
+        """
         if fromParamsFile:
             # Load the color patches and configuration from a pickle file
             try:
@@ -449,6 +632,16 @@ class Calibration():
 
 
     def getMeasuresDeltaE00(self) -> float:
+        """
+        Calcula las métricas de error ΔE00 entre los parches calibrados y de referencia.
+
+        Compara los valores LAB de los parches detectados en la imagen calibrada
+        con los valores de referencia del ColorChecker estándar.
+
+        Returns:
+            dict: Diccionario con estadísticas del error (media, desv. estándar,
+                  mínimo, máximo y valores individuales).
+        """
         is_detected = self.detectColorChecker(drawPatches=False, detectCalibratedImg=True, saveCalibratedPatches=True)
         if is_detected:
             # Convertir parches detectados a LAB
@@ -465,12 +658,26 @@ class Calibration():
             return measures_delta_e00
 
     def clearAllCalibration(self) -> None:
+        """
+        Limpia todos los datos de calibración almacenados en memoria.
+
+        Reinicia las variables de imagen, parches detectados y modelo de corrección.
+        """
         self.color_checker_raw_image = None
         self.color_patches_raw = None
         self.img_draw = None
         self.model = None
-    
+
     def applyColorCorrection(self, image):
+        """
+        Aplica la corrección de color a una imagen usando el modelo calibrado.
+
+        Args:
+            image (numpy.ndarray): Imagen RGB a calibrar (0-255).
+
+        Returns:
+            numpy.ndarray: Imagen RGB calibrada (0-255).
+        """
         # Apply color correction to the image
         image = image.astype(np.float64) / 255.0
 
@@ -488,6 +695,12 @@ class Calibration():
 
 class ImageProcessing():
     def __init__(self) -> None:
+        """
+        Inicializa el sistema de procesamiento de imagen y segmentación.
+
+        Configura el modelo SAM2 para segmentación, carga la base de datos PANTONE
+        y establece los parámetros por defecto para procesamiento de color.
+        """
         # Attributes
         self.raw_mask = None
         self.score = None
@@ -520,6 +733,16 @@ class ImageProcessing():
 
     # Methods
     def loadImage(self, image, calibration) -> None:
+        """
+        Carga y prepara una imagen para procesamiento.
+
+        Recorta la imagen a formato cuadrado, aplica calibración de color,
+        genera la versión escalada y configura el predictor SAM2.
+
+        Args:
+            image (numpy.ndarray): Imagen RGB a procesar.
+            calibration (Calibration): Instancia de calibración con modelo activo.
+        """
         self.original_image = self.cropSquare(image)
         calibration.reconstructModel(fromParamsFile=True)
         self.calibrated_image = calibration.applyColorCorrection(self.original_image)
@@ -528,6 +751,12 @@ class ImageProcessing():
         self.predictor.set_image(self.scaled_image)
 
     def saveOriginalImage(self, path) -> None:
+        """
+        Guarda la imagen original (sin calibrar) en disco.
+
+        Args:
+            path (str): Ruta completa donde guardar la imagen (.png o .npy).
+        """
         ext = os.path.splitext(path)[1].lower()
         if ext == ".png":
             cv2.imwrite(path, cv2.cvtColor(self.original_image, cv2.COLOR_RGB2BGR))
@@ -538,6 +767,12 @@ class ImageProcessing():
                                 f"El formato {ext} no es válido para guardar.")
     
     def saveCalibratedImage(self, path) -> None:
+        """
+        Guarda la imagen calibrada en disco.
+
+        Args:
+            path (str): Ruta completa donde guardar la imagen (.png o .npy).
+        """
         ext = os.path.splitext(path)[1].lower()
         if ext == ".png":
             cv2.imwrite(path, cv2.cvtColor(self.calibrated_image, cv2.COLOR_RGB2BGR))
@@ -548,36 +783,107 @@ class ImageProcessing():
                                 f"El formato {ext} no es válido para guardar.")
     
     def getScaledImage(self) -> np.ndarray:
+        """
+        Obtiene la imagen calibrada en resolución reducida.
+
+        Returns:
+            numpy.ndarray: Imagen RGB escalada para visualización.
+        """
         return self.scaled_image
-        
+
     def getRawMask(self):
+        """
+        Obtiene la máscara binaria cruda generada por SAM2.
+
+        Returns:
+            numpy.ndarray: Máscara binaria sin suavizado.
+        """
         return self.raw_mask
-    
+
     def getFeatheredMask(self):
+        """
+        Obtiene la máscara suavizada por el filtro guiado.
+
+        Returns:
+            numpy.ndarray: Máscara con gradientes suaves (valores 0-1).
+        """
         return self.feathered_mask
-    
+
     def getScaledFeatheredMask(self):
+        """
+        Obtiene la máscara suavizada en resolución reducida.
+
+        Returns:
+            numpy.ndarray: Máscara escalada para visualización.
+        """
         return self.scaled_feathered_mask
-    
+
     def getScore(self):
+        """
+        Obtiene el score de confianza de la segmentación SAM2.
+
+        Returns:
+            float: Valor de confianza entre 0 y 1.
+        """
         return self.score
 
     def getFilterR(self) -> int:
+        """
+        Obtiene el radio actual del filtro guiado.
+
+        Returns:
+            int: Radio de la ventana del filtro en píxeles.
+        """
         return self.r_filter
-    
+
     def getFilterEPS(self) -> float:
+        """
+        Obtiene el valor de epsilon del filtro guiado.
+
+        Returns:
+            float: Parámetro de regularización del filtro.
+        """
         return self.eps_filter
-    
+
     def getFeatheredMaskColor(self):
+        """
+        Obtiene el color RGB de visualización de la máscara suavizada.
+
+        Returns:
+            numpy.ndarray: Array con valores RGB (0-255).
+        """
         return self.feathered_mask_color
 
     def setFeatheredMaskColor(self, color_RGB) -> None:
+        """
+        Establece el color de visualización de la máscara suavizada.
+
+        Args:
+            color_RGB (list): Lista con valores RGB [R, G, B] en rango 0-255.
+        """
         self.feathered_mask_color = np.array(color_RGB)
-    
+
     def getRawMaskColor(self):
+        """
+        Obtiene el color RGB de visualización de la máscara cruda.
+
+        Returns:
+            numpy.ndarray: Array con valores RGB (0-255).
+        """
         return self.raw_mask_color
 
     def decimateImage(self, image: np.ndarray, is_mask: bool = False) -> np.ndarray:
+        """
+        Reduce la resolución de una imagen o máscara.
+
+        Args:
+            image (numpy.ndarray): Imagen o máscara a escalar.
+            is_mask (bool): Si True, usa interpolación nearest-neighbor para máscaras.
+                           Si False, usa interpolación de área para imágenes.
+
+        Returns:
+            numpy.ndarray: Imagen o máscara escalada a resolución reducida.
+        """
         if not is_mask:
             method = cv2.INTER_AREA
         else:
@@ -586,6 +892,17 @@ class ImageProcessing():
         return cv2.resize(image, (self.scaled_image_size, self.scaled_image_size), interpolation=method)
     
     def interpolateImage(self, image: np.ndarray, is_mask: bool = False) -> np.ndarray:
+        """
+        Aumenta la resolución de una imagen o máscara a tamaño original.
+
+        Args:
+            image (numpy.ndarray): Imagen o máscara a interpolar.
+            is_mask (bool): Si True, usa interpolación nearest-neighbor para máscaras.
+                           Si False, usa interpolación cúbica para imágenes.
+
+        Returns:
+            numpy.ndarray: Imagen o máscara interpolada a resolución original.
+        """
         if not is_mask:
             method = cv2.INTER_CUBIC
         else:
@@ -594,12 +911,30 @@ class ImageProcessing():
         return cv2.resize(image, self.original_image_size, interpolation=method)
 
     def setInputPointArray(self, input_point_list) -> None:
+        """
+        Establece las coordenadas de los puntos prompt para SAM2.
+
+        Args:
+            input_point_list (list): Lista de tuplas (x, y) con coordenadas de los puntos.
+        """
         self.input_point = np.array(input_point_list)
-    
+
     def setInputLabelArray(self, input_label_list) -> None:
+        """
+        Establece las etiquetas de los puntos prompt para SAM2.
+
+        Args:
+            input_label_list (list): Lista de etiquetas (1 para positivo, 0 para negativo).
+        """
         self.input_label = np.array(input_label_list)
-    
+
     def setRawMask(self) -> None:
+        """
+        Ejecuta SAM2 para generar la máscara de segmentación.
+
+        Utiliza los puntos y etiquetas configurados para predecir la región segmentada,
+        interpolando el resultado a resolución original.
+        """
         self.raw_mask, self.score, _ = self.predictor.predict(
                                         point_coords=self.input_point,
                                         point_labels=self.input_label,
@@ -609,6 +944,16 @@ class ImageProcessing():
         self.score = self.score[0]
 
     def guidedFilter(self, radius=15, eps=0.01) -> None:
+        """
+        Aplica un filtro guiado a la máscara para suavizar bordes.
+
+        Utiliza la imagen calibrada como guía para preservar bordes importantes
+        mientras suaviza la máscara binaria.
+
+        Args:
+            radius (int): Radio de la ventana del filtro en píxeles.
+            eps (float): Parámetro de regularización (epsilon cuadrado).
+        """
         guide_I = self.calibrated_image.astype(np.float32)/255.0
         mask_p = self.raw_mask.astype(np.float32)
 
@@ -620,7 +965,16 @@ class ImageProcessing():
                         )
         self.scaled_feathered_mask = self.decimateImage(self.feathered_mask)
 
-    def getSegmentedRegionHistogram(self):        
+    def getSegmentedRegionHistogram(self):
+        """
+        Calcula el histograma de color de la región segmentada.
+
+        Genera histogramas separados para cada canal BGR usando la máscara
+        suavizada binarizada.
+
+        Returns:
+            dict: Diccionario con histogramas para canales 'b', 'g', 'r'.
+        """
         _, binary_mask_uint8 = cv2.threshold(self.feathered_mask, 0.5, 255, cv2.THRESH_BINARY)
         binary_mask_uint8 = binary_mask_uint8.astype(np.uint8)
 
@@ -640,6 +994,15 @@ class ImageProcessing():
         return histograms
 
     def searchPantoneInDatabase(self, pantone_name: str) -> list:
+        """
+        Busca un color PANTONE específico en la base de datos.
+
+        Args:
+            pantone_name (str): Nombre del color PANTONE a buscar.
+
+        Returns:
+            list: [nombre_pantone, valores_lab] si se encuentra, None en caso contrario.
+        """
         search = pantone_name.strip().upper()
         matches = np.where(self.pantone_name_colors == search)[0]
         if matches.size > 0:
@@ -650,12 +1013,27 @@ class ImageProcessing():
         return [self.pantone_name_colors[idx], self.pantone_lab_colors[idx]]
 
     def loadPantoneDatabase(self) -> None:
+        """
+        Carga la base de datos de colores PANTONE desde archivo JSON.
+
+        Lee los valores LAB y nombres de todos los colores PANTONE disponibles
+        en la base de datos configurada.
+        """
         with open(self.pantone_database_path, "r", encoding='utf-8') as f:
             pantone_db = json.load(f)
             self.pantone_lab_colors = np.array([p["components"] for p in pantone_db["records"].values()], dtype=np.float32)
             self.pantone_name_colors = np.array([p["name"] for p in pantone_db["records"].values()], dtype=np.str_)
     
     def findNearestPantone(self, lab_color: np.array) -> dict:
+        """
+        Encuentra los 3 colores PANTONE más cercanos a un color LAB dado.
+
+        Calcula la distancia ΔE00 entre el color de entrada y todos los colores
+        en la base de datos PANTONE, retornando los 3 más similares.
+
+        Args:
+            lab_color (numpy.ndarray): Color en espacio LAB [L, a, b].
+        """
         delta_Es = deltaE_ciede2000(np.array([lab_color], dtype=np.float32), self.pantone_lab_colors)
         sorted_3_indx = np.argsort(delta_Es)[:3]
 
@@ -671,12 +1049,33 @@ class ImageProcessing():
                                             }
     
     def getTopColors(self) -> dict:
+        """
+        Obtiene los 3 colores PANTONE predominantes detectados.
+
+        Returns:
+            dict: Diccionario con información de los 3 colores principales.
+        """
         return self.top_colors
-    
+
     def getMainColor(self) -> dict:
+        """
+        Obtiene el color principal detectado.
+
+        Returns:
+            dict: Información del color dominante.
+        """
         return self.main_color
 
     def estimateColorsByWeightedMedian(self, min_weight_threshold: float = 0.0) -> None:
+        """
+        Estima el color predominante usando mediana ponderada.
+
+        Calcula la mediana ponderada de cada canal LAB usando los valores de la
+        máscara suavizada como pesos, encontrando los 3 PANTONE más cercanos.
+
+        Args:
+            min_weight_threshold (float): Umbral mínimo de peso para incluir píxeles.
+        """
         # Convertir a LAB en rangos estándar
         image_lab = self.fromRGBtoLAB(self.calibrated_image)
 
@@ -710,6 +1109,19 @@ class ImageProcessing():
 
     def estimateColorByKMeans(self, n_clusters: int = 3,
                                 min_weight_threshold: float = 0.3) -> np.ndarray:
+        """
+        Estima el color predominante usando K-Means clustering.
+
+        Agrupa los píxeles en clusters, seleccionando el centroide del cluster
+        con mayor peso acumulado según la máscara suavizada.
+
+        Args:
+            n_clusters (int): Número de clusters para K-Means.
+            min_weight_threshold (float): Umbral mínimo de peso para incluir píxeles.
+
+        Returns:
+            numpy.ndarray: Color LAB dominante.
+        """
         # Convertir a LAB en rangos estándar
         image_lab = self.fromRGBtoLAB(self.calibrated_image)
         
@@ -750,6 +1162,21 @@ class ImageProcessing():
                                 sigma: float = 10.0,
                                 n_clusters: int = 100,
                                 min_weight_threshold: float = 0.1) -> np.ndarray:
+        """
+        Estima el color predominante usando Soft Voting probabilístico.
+
+        Aplica K-Means con muchos clusters, luego usa un kernel RBF para calcular
+        probabilidades de pertenencia a cada color PANTONE, ponderadas por el peso
+        del cluster.
+
+        Args:
+            sigma (float): Parámetro del kernel RBF.
+            n_clusters (int): Número de clusters para K-Means.
+            min_weight_threshold (float): Umbral mínimo de peso para incluir píxeles.
+
+        Returns:
+            numpy.ndarray: Color LAB dominante.
+        """
         # Convertir a LAB en rangos estándar
         image_lab = self.fromRGBtoLAB(self.calibrated_image)
 
@@ -808,6 +1235,15 @@ class ImageProcessing():
     
     @staticmethod
     def fromRGBtoLAB(image_rgb: np.ndarray) -> np.ndarray:
+        """
+        Convierte una imagen RGB al espacio de color CIELAB.
+
+        Args:
+            image_rgb (numpy.ndarray): Imagen RGB (0-255).
+
+        Returns:
+            numpy.ndarray: Imagen LAB con rangos estándar [L: 0-100, a: -128-127, b: -128-127].
+        """
         # Paso 1: Convertir RGB a LAB (OpenCV devuelve uint8 en rangos comprimidos)
         image_lab_opencv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2LAB)
         
@@ -823,6 +1259,17 @@ class ImageProcessing():
 
     @staticmethod
     def createColoredMask(mask, mask_color, alpha=0.4):
+        """
+        Crea una máscara coloreada semitransparente para visualización.
+
+        Args:
+            mask (numpy.ndarray): Máscara en escala de grises (0-255 o 0-1).
+            mask_color (numpy.ndarray): Color RGB de la máscara (0-255).
+            alpha (float): Transparencia de la máscara (0-1).
+
+        Returns:
+            numpy.ndarray: Máscara RGBA coloreada (0-255).
+        """
         mask = np.clip(mask, 0, 255)
         color = np.hstack((mask_color/255, [alpha]))
         h, w = mask.shape[-2:]
@@ -862,6 +1309,16 @@ class ImageProcessing():
 class Viewer(QGraphicsView):
     # Initialization
     def __init__(self, parent=None, camera=None) -> None:
+        """
+        Inicializa el visor gráfico para mostrar imágenes y máscaras.
+
+        Configura la escena gráfica, habilita interacciones de zoom/pan y
+        establece los estilos de renderizado.
+
+        Args:
+            parent: Widget padre (opcional).
+            camera (Camera): Instancia de la cámara para verificar estado de preview.
+        """
         super().__init__(parent)
         self.scene = None
         self.pixmap_item = None
@@ -888,24 +1345,54 @@ class Viewer(QGraphicsView):
         self.preview_item = None
 
     # Methods
-    
+
     def loadScene(self):
+        """
+        Crea e inicializa una nueva escena gráfica.
+
+        Configura el contenedor principal para todos los elementos visuales.
+        """
         self.scene = QGraphicsScene(self)
         self.setScene(self.scene)
 
     def setIsCalibrationFlag(self, value: bool):
+        """
+        Establece el flag de modo calibración.
+
+        Args:
+            value (bool): True para activar modo calibración, False para desactivar.
+        """
         self.is_calibration = value
 
     def setIsPreviewFlag(self, value: bool):
+        """
+        Establece el flag de modo preview.
+
+        Args:
+            value (bool): True para activar modo preview, False para desactivar.
+        """
         self.is_preview = value
 
     def clearVariables(self) -> None:
+        """
+        Limpia todas las variables de segmentación.
+
+        Reinicia la máscara, puntos de prompt y marcadores visuales.
+        """
         self.mask_item = None
         self.point_coordinates = []
         self.point_labels = []
         self.marker_items = []
 
     def setImageFromPixmap(self, pixmap: QPixmap) -> None:
+        """
+        Carga una imagen en la escena desde un QPixmap.
+
+        Limpia la escena anterior, carga la nueva imagen y ajusta la vista.
+
+        Args:
+            pixmap (QPixmap): Imagen a mostrar.
+        """
         self.scene.clear()
         self.mask_item = None               # <-- Olvida la referencia a la máscara anterior.
         self.point_coordinates.clear()      # <-- Limpia la lista de coordenadas.
@@ -941,6 +1428,15 @@ class Viewer(QGraphicsView):
         self.scene.addItem(self.mask_item)
 
     def getImageArrayFromScene(self):
+        """
+        Renderiza la escena completa a un array numpy RGB.
+
+        Captura todo el contenido visible de la escena (imagen base + overlays)
+        en formato de array numpy.
+
+        Returns:
+            numpy.ndarray: Imagen RGB de la escena renderizada.
+        """
         # Obtener el rectángulo de la escena
         scene_rect = self.scene.sceneRect()
         
@@ -969,17 +1465,45 @@ class Viewer(QGraphicsView):
         return rgb_array
 
     def getPointCoordinates(self):
+        """
+        Obtiene las coordenadas de todos los puntos prompt.
+
+        Returns:
+            list: Lista de tuplas (x, y) con las coordenadas.
+        """
         return self.point_coordinates
 
     def getPointLabels(self):
+        """
+        Obtiene las etiquetas de todos los puntos prompt.
+
+        Returns:
+            list: Lista de etiquetas (1 para positivo, 0 para negativo).
+        """
         return self.point_labels
 
     def resizeEvent(self, event) -> None:
+        """
+        Maneja el evento de redimensionamiento de la ventana.
+
+        Ajusta la vista para mantener la imagen visible al cambiar el tamaño.
+
+        Args:
+            event: Evento de redimensionamiento Qt.
+        """
         super().resizeEvent(event)
         if self.pixmap_item:
             self.fitInView(self.pixmap_item, Qt.KeepAspectRatio)
     
     def wheelEvent(self, event) -> None:
+        """
+        Maneja el evento de la rueda del mouse para zoom.
+
+        Permite hacer zoom in/out con la rueda del mouse cuando no está en modo preview.
+
+        Args:
+            event: Evento de la rueda del mouse.
+        """
         if not self.camera.getIsPreviewFlag():
             factor_zoom = 1.1
             if event.angleDelta().y() > 0:
@@ -996,10 +1520,27 @@ class Viewer(QGraphicsView):
             self.scale(factor, factor)
     
     def enterEvent(self, event) -> None:
+        """
+        Maneja el evento de entrada del mouse en el área del visor.
+
+        Establece el cursor apropiado al entrar en el widget.
+
+        Args:
+            event: Evento de entrada del mouse.
+        """
         self.viewport().setCursor(Qt.ArrowCursor)
         super().enterEvent(event)
     
     def mouseMoveEvent(self, event) -> None:
+        """
+        Maneja el movimiento del mouse para detectar arrastre (pan).
+
+        Determina si el usuario está arrastrando la vista basándose en la distancia
+        recorrida desde el clic inicial.
+
+        Args:
+            event: Evento de movimiento del mouse.
+        """
         if not self.camera.getIsPreviewFlag():
             # Si el botón izquierdo está presionado y tenemos una posición de inicio...
             if event.buttons() == Qt.LeftButton and self.click_pos:
@@ -1015,6 +1556,16 @@ class Viewer(QGraphicsView):
             super().mouseMoveEvent(event)
 
     def addPoint(self, x: float, y: float, label: int):
+        """
+        Agrega un punto prompt en la escena para segmentación SAM2.
+
+        Dibuja un marcador visual y almacena las coordenadas y etiqueta del punto.
+
+        Args:
+            x (float): Coordenada X del punto en la escena.
+            y (float): Coordenada Y del punto en la escena.
+            label (int): Etiqueta del punto (1 para positivo, 0 para negativo).
+        """
         self.point_coordinates.append((x, y))
         self.point_labels.append(label)
         color = QColor(0, 255, 0) if label == 1 else QColor(255, 0, 0)
@@ -1034,6 +1585,15 @@ class Viewer(QGraphicsView):
         self.marker_items.append(marker)
 
     def mouseReleaseEvent(self, event) -> None:
+        """
+        Maneja el evento de soltar el botón del mouse.
+
+        Si no hubo arrastre, agrega un punto prompt positivo (clic izquierdo)
+        en la ubicación del clic.
+
+        Args:
+            event: Evento de soltar el botón del mouse.
+        """
         if (not self.is_calibration) and (not self.camera.getIsPreviewFlag()):
             if event.button() == Qt.LeftButton and not self.is_panning:
                 if self.pixmap_item:
@@ -1051,6 +1611,15 @@ class Viewer(QGraphicsView):
             self.viewport().setCursor(Qt.ArrowCursor)
     
     def mousePressEvent(self, event) -> None:
+        """
+        Maneja el evento de presionar el botón del mouse.
+
+        Registra la posición inicial del clic y diferencia entre clic izquierdo
+        (posible pan) y clic derecho (punto negativo directo).
+
+        Args:
+            event: Evento de presionar el botón del mouse.
+        """
         if (not self.is_calibration) and (not self.camera.getIsPreviewFlag()):
             # Solo nos interesa el clic izquierdo p ara iniciar la lógica
             if event.button() == Qt.LeftButton and self.pixmap_item:
@@ -1066,11 +1635,21 @@ class Viewer(QGraphicsView):
             super().mousePressEvent(event)
 
     def clearMask(self) -> None:
+        """
+        Elimina la máscara de segmentación de la escena.
+
+        Remueve el overlay de la máscara visible.
+        """
         if self.mask_item:
             self.scene.removeItem(self.mask_item)
             self.mask_item = None
-    
+
     def clearAllPoints(self) -> None:
+        """
+        Elimina todos los puntos prompt de la escena.
+
+        Remueve los marcadores visuales y limpia las listas de coordenadas y etiquetas.
+        """
         if self.marker_items:
             for i, marker in enumerate(self.marker_items):
                 self.scene.removeItem(marker)
@@ -1080,15 +1659,32 @@ class Viewer(QGraphicsView):
             self.point_labels.clear()
         
     def showMask(self, show: bool) -> None:
+        """
+        Muestra u oculta la máscara de segmentación.
+
+        Args:
+            show (bool): True para mostrar, False para ocultar.
+        """
         if self.mask_item:
             self.mask_item.setVisible(show)
-    
+
     def showAllPoints(self, show: bool) -> None:
+        """
+        Muestra u oculta todos los marcadores de puntos prompt.
+
+        Args:
+            show (bool): True para mostrar, False para ocultar.
+        """
         if self.marker_items:
             for marker in self.marker_items:
                 marker.setVisible(show)
     
     def clearLastPoint(self) -> None:
+        """
+        Elimina el último punto prompt agregado.
+
+        Remueve el marcador visual más reciente y su información asociada.
+        """
         if self.marker_items:
             last_point = self.marker_items.pop()
             self.scene.removeItem(last_point)
@@ -1097,6 +1693,15 @@ class Viewer(QGraphicsView):
     
     @staticmethod
     def fromCV2ToQPixmap(imgCV2):
+        """
+        Convierte una imagen de OpenCV (numpy array) a QPixmap.
+
+        Args:
+            imgCV2 (numpy.ndarray): Imagen en formato OpenCV (RGB o RGBA).
+
+        Returns:
+            QPixmap: Imagen convertida para visualización en Qt.
+        """
         height, width, channel = imgCV2.shape
         bytes_per_line = channel * width
         if channel == 3:
@@ -1197,8 +1802,19 @@ class ConfigManager:
 
 class ConfigDialog(QDialog):
     """Ventana de configuración con pestañas para diferentes parámetros"""
-    
+
     def __init__(self, parent=None, config_manager=None, processing=None):
+        """
+        Inicializa el diálogo de configuración con todas las pestañas de ajustes.
+
+        Crea una ventana modal con pestañas para configurar cámara, calibración,
+        segmentación, color y exportación.
+
+        Args:
+            parent: Widget padre (opcional).
+            config_manager (ConfigManager): Gestor de configuración del sistema.
+            processing (ImageProcessing): Instancia de procesamiento para obtener valores actuales.
+        """
         super().__init__(parent)
         self.config_manager = config_manager
         self.processing = processing
@@ -1402,6 +2018,14 @@ class ConfigDialog(QDialog):
         return tab
 
     def aecChecked(self, state):
+        """
+        Maneja el cambio de estado del checkbox de AEC (Auto Exposure Control).
+
+        Muestra u oculta los controles manuales de exposición según el estado del AEC.
+
+        Args:
+            state (int): Estado del checkbox (2 para marcado, 0 para desmarcado).
+        """
         if state == 2:
             self.label_exposition_time.hide()
             self.spin_exposition_time.hide()
@@ -1414,6 +2038,14 @@ class ConfigDialog(QDialog):
             self.spin_gain.show()
     
     def awbChecked(self, state):
+        """
+        Maneja el cambio de estado del checkbox de AWB (Auto White Balance).
+
+        Muestra u oculta los controles manuales de balance de blancos según el estado del AWB.
+
+        Args:
+            state (int): Estado del checkbox (2 para marcado, 0 para desmarcado).
+        """
         if state == 2:
             self.label_red_gain.hide()
             self.spin_red_gain.hide()
@@ -1968,6 +2600,12 @@ class ConfigDialog(QDialog):
 class MainWindow(QMainWindow):
     # Initialization
     def __init__(self) -> None:
+        """
+        Inicializa la ventana principal de la aplicación SACISMC.
+
+        Configura la interfaz completa incluyendo el visor, paneles laterales,
+        menú y conexiones. Inicia el preview de segmentación automáticamente.
+        """
         super().__init__()
 
         self.source_img_path = None
@@ -2447,6 +3085,15 @@ class MainWindow(QMainWindow):
         return widget
     
     def createSideCalibrationWidget(self) -> QVBoxLayout:
+        """
+        Crea el panel lateral para el módulo de calibración de color.
+
+        Construye la interfaz para cargar imágenes del ColorChecker, detectar parches,
+        aplicar corrección y guardar parámetros de calibración.
+
+        Returns:
+            QWidget: Widget con el panel de calibración completo.
+        """
         # Layout total
         widget = QWidget()
         layout = QVBoxLayout(widget)
@@ -2612,6 +3259,11 @@ class MainWindow(QMainWindow):
         return widget
     
     def returnClicked(self) -> None:
+        """
+        Maneja el clic en el botón Volver.
+
+        Reinicia el estado de segmentación y vuelve al modo preview.
+        """
         self.doc.setIsSegmentedFlag(False)
         self.startPreviewSegmentation()
 
@@ -2622,6 +3274,12 @@ class MainWindow(QMainWindow):
             self.return_button.hide()
 
     def takePhotoOperationClicked(self) -> None:
+        """
+        Maneja el clic en el botón Tomar Foto del módulo de operación.
+
+        Detiene el preview, captura una imagen calibrada de alta resolución
+        y la carga para segmentación.
+        """
         # Detener preview mientras se captura
         self.stopPreview()
 
@@ -2648,6 +3306,11 @@ class MainWindow(QMainWindow):
                 )
 
     def takePhotoCalibrationClicked(self) -> None:
+        """
+        Maneja el clic en el botón Tomar Foto del módulo de calibración.
+
+        Captura una imagen del ColorChecker para proceso de calibración.
+        """
         # Detener preview mientras se captura
         self.stopPreview()
 
@@ -2668,12 +3331,22 @@ class MainWindow(QMainWindow):
                 )
 
     def showImgSelection(self) -> None:
+        """
+        Alterna entre mostrar la imagen calibrada o la imagen original.
+
+        Responde a los radio buttons para comparar el efecto de la calibración.
+        """
         if self.radio_calibrated.isChecked():
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.calibration.getDrawImage()))
         elif self.radio_original.isChecked():
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.calibration.getRawImage()))
     
     def selectPhotoCalibrationClicked(self) -> None:
+        """
+        Abre un diálogo para seleccionar una imagen del ColorChecker desde archivo.
+
+        Permite cargar imágenes .png o .npy para calibración.
+        """
         # Detener preview al abrir configuración
         was_preview_active = self.is_preview_active
         preview_type_backup = self.current_preview_type
@@ -2706,6 +3379,11 @@ class MainWindow(QMainWindow):
             self.button_save.hide()
 
     def detectColorCheckerClicked(self) -> None:
+        """
+        Ejecuta la detección automática de parches del ColorChecker.
+
+        Intenta localizar y marcar los 24 parches de color en la imagen.
+        """
         is_detected = self.calibration.detectColorChecker(drawPatches=True)
         if is_detected:
             self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(self.calibration.getDrawImage()))
@@ -2716,6 +3394,11 @@ class MainWindow(QMainWindow):
                                 "Por favor, asegurar la correcta ubicación del Color Checker.")
 
     def applyClicked(self) -> None:
+        """
+        Aplica la matriz de corrección de color y calcula métricas de calidad.
+
+        Reconstruye el modelo CCM, calibra la imagen y calcula los valores ΔE00.
+        """
         self.calibration.reconstructModel()
         # Apply calibration and show it
         img = self.calibration.applyColorCorrection(self.calibration.getRawImage())
@@ -2734,6 +3417,11 @@ class MainWindow(QMainWindow):
         self.button_save.show()        
 
     def saveClicked(self) -> None:
+        """
+        Guarda los parámetros de calibración en un archivo pickle.
+
+        Exporta la matriz de corrección y registra las métricas de calidad en Excel.
+        """
         file_path, _ = QFileDialog.getSaveFileName(
                                     self,
                                     "Guardar archivo como",
@@ -2800,6 +3488,11 @@ class MainWindow(QMainWindow):
                                 f"Error al guardar los datos: {str(e)}")
             
     def cancelClicked(self) -> None:
+        """
+        Cancela el proceso de calibración y vuelve al modo de operación normal.
+
+        Limpia todos los datos de calibración y reinicia el preview.
+        """
         msg = "La calibración de color ha sido cancelada por el usuario."
 
         QMessageBox.information(self, "Cancelado", msg)
@@ -2815,12 +3508,24 @@ class MainWindow(QMainWindow):
         self.startPreviewSegmentation()
     
     def showMask(self, state) -> None:
+        """
+        Controla la visibilidad de la máscara de segmentación.
+
+        Args:
+            state (int): Estado del checkbox (2 para mostrar, 0 para ocultar).
+        """
         if state == 2:
             self.viewer.showMask(True)
         else:
             self.viewer.showMask(False)
 
     def showPoints(self, state) -> None:
+        """
+        Controla la visibilidad de los puntos prompt.
+
+        Args:
+            state (int): Estado del checkbox (2 para mostrar, 0 para ocultar).
+        """
         if state == 2:
             self.viewer.showAllPoints(True)
         else:
@@ -2912,6 +3617,12 @@ class MainWindow(QMainWindow):
                 self.color_delta_3.show()
     
     def exportColorComparison(self) -> None:
+        """
+        Exporta la comparación de métodos de color a un archivo Excel.
+
+        Ejecuta los 3 métodos de estimación de color y guarda los resultados
+        en una hoja de cálculo con métricas de desempeño.
+        """
         if self.doc.getIsSegmentedFlag():
             headers = ("Marca Temporal", "Identificador", "Guía - Pantone", "Guía - LAB",
                         "Mediana - Pantone", "Mediana - LAB", "Mediana - ΔE00", "Mediana - Tiempo Ejecución (ms)",
@@ -3019,6 +3730,12 @@ class MainWindow(QMainWindow):
     
     
     def saveRecord(self) -> None:
+        """
+        Guarda un registro completo de la segmentación en Excel.
+
+        Exporta el identificador, colores detectados, imágenes y metadata
+        del análisis realizado.
+        """
         id = self.input_id.text().strip()
         if not id:
             QMessageBox.warning(self, "Campo vacío", "Por favor ingrese un identificador antes de guardar.")
@@ -3106,6 +3823,11 @@ class MainWindow(QMainWindow):
                             f"Error al guardar los datos: {str(e)}")
 
     def saveImage(self) -> None:
+        """
+        Guarda la imagen actual de la escena en archivo.
+
+        Permite exportar la visualización completa (imagen + overlays) en formato PNG o NPY.
+        """
         #if self.source_img_path is None:
         if self.viewer.scene is None:
             QMessageBox.warning(self, "Sin imagen", 
@@ -3142,6 +3864,12 @@ class MainWindow(QMainWindow):
                             f"Error al guardar la imagen: {str(e)}")
 
     def startColorCalibration(self) -> None:
+        """
+        Inicia el módulo de calibración de color.
+
+        Cambia el panel lateral al modo calibración y activa el preview específico
+        para captura del ColorChecker.
+        """
         # Detener preview de segmentación
         self.stopPreview()
         self.doc.setIsSegmentedFlag(False)
@@ -3158,6 +3886,11 @@ class MainWindow(QMainWindow):
         self.startPreviewCalibration()
 
     def restoreOperationWidget(self) -> None:
+        """
+        Restaura el panel lateral al modo de operación normal.
+
+        Remueve el widget de calibración y vuelve al widget de operación/segmentación.
+        """
         self.viewer.setIsCalibrationFlag(False)
         current_widget = self.side_panel.currentWidget()
         self.side_panel.setCurrentWidget(self.operationWidget)
@@ -3167,6 +3900,11 @@ class MainWindow(QMainWindow):
             current_widget.deleteLater()
 
     def openImage(self) -> None:
+        """
+        Abre un diálogo para cargar una imagen desde archivo.
+
+        Permite seleccionar imágenes .png o .npy para procesamiento y segmentación.
+        """
         self.source_img_path, _ = QFileDialog.getOpenFileName(
             self, "Seleccionar Imagen", "resources", "Archivos de Imagen (*.png *.npy)"
         )
@@ -3198,6 +3936,12 @@ class MainWindow(QMainWindow):
                 self.return_button.show()
 
     def runSegmentation(self) -> None:
+        """
+        Ejecuta el pipeline completo de segmentación y estimación de color.
+
+        Aplica SAM2 con los puntos prompt, ejecuta el filtro guiado y estima
+        los colores PANTONE predominantes usando el método configurado.
+        """
         if self.processing:
             if self.viewer.point_coordinates:
                 # Obtener configuración de método de color
@@ -3244,6 +3988,11 @@ class MainWindow(QMainWindow):
                                 "Por favor, carga una imagen antes de correr la segmentación.")
 
     def exportFeatheredComparisonImage(self) -> None:
+        """
+        Exporta una imagen comparativa de diferentes parámetros del filtro guiado.
+
+        Genera una grilla mostrando el efecto de varias combinaciones de radio y epsilon.
+        """
         if self.doc.getIsSegmentedFlag():
             img_path = self.doc.createGuidedFilterComparisonImage(self.processing)
             QMessageBox.information(self, 
@@ -3255,6 +4004,11 @@ class MainWindow(QMainWindow):
                                 "Por favor, correr la segmentación antes de exportar la imagen.")
 
     def exportColorComparisonImage(self) -> None:
+        """
+        Exporta una imagen comparativa visual de los tres métodos de estimación de color.
+
+        Genera una figura con los colores detectados por Mediana, K-Means y Soft Voting.
+        """
         if self.doc.getIsSegmentedFlag():
             img_path = self.doc.createColorMethodsComparationImage(self.config_manager, self.processing)
             QMessageBox.information(self, 
@@ -3267,6 +4021,11 @@ class MainWindow(QMainWindow):
 
 
     def exportHistogram(self) -> None:
+        """
+        Exporta el histograma de color de la región segmentada.
+
+        Genera un gráfico con los histogramas RGB de los píxeles dentro de la máscara.
+        """
         if self.doc.getIsSegmentedFlag():
             # 1. Obtener los datos del histograma desde ImageProcessing
             hist_data = self.processing.getSegmentedRegionHistogram()
