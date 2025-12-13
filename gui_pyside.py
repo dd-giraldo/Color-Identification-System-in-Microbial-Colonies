@@ -46,7 +46,6 @@ class Camera():
                                 sensor={"output_size": (3280, 2464)}
                             )
 
-        # Flag para saber si la cámara está en modo preview
         self.is_preview_mode = False
         
     def getIsPreviewFlag(self) -> bool:
@@ -97,7 +96,6 @@ class Camera():
                                o 'calibration' (720x540). Por defecto es 'segmentation'.
         """
         if not self.picam2.started:
-            # Configurar para preview de baja resolución
             if preview_type == 'segmentation':
                 self.picam2.configure(self.preview_config_seg)
             else:
@@ -132,7 +130,6 @@ class Camera():
         if not self.picam2.started:
             return None
         
-        # Capturar frame de baja resolución
         frame = self.picam2.capture_array()
         
         return frame
@@ -153,7 +150,6 @@ class Camera():
         self.picam2.configure(self.capture_config)
         self.picam2.set_controls(self.controls)
         
-        # Capturar imagen
         self.picam2.start()
         time.sleep(1)
         first_img = self.picam2.capture_array()
@@ -219,8 +215,7 @@ class Documentation():
         """
         rows: int = len(self.list_r)
         columns: int = len(self.list_eps)
-        # Crea una figura y una cuadrícula de subgráficos (axes)
-        # figsize controla el tamaño final de la imagen en pulgadas
+        
         fig, axes = plt.subplots(rows, columns, figsize=(10, 8))
 
         for i, r in enumerate(self.list_r):
@@ -230,22 +225,18 @@ class Documentation():
                 valid_mask: bool = processing.feathered_mask > 0
                 
                 if (i == 0) and (j == 0):
-                    # Encuentra el bounding box de la región válida
                     valid_rows = np.any(valid_mask, axis=1)
                     valid_cols = np.any(valid_mask, axis=0)
                     rmin, rmax = np.where(valid_rows)[0][[0, -1]]
                     cmin, cmax = np.where(valid_cols)[0][[0, -1]]
 
-                # Recorta la imagen al bounding box
                 img = processing.calibrated_image[rmin:rmax+1, cmin:cmax+1]
                 mask_crop = processing.feathered_mask[rmin:rmax+1, cmin:cmax+1]
 
                 colored_mask = processing.createColoredMask(mask_crop, processing.getFeatheredMaskColor(), 0.6)
 
-                # Muestra la imagen en el subgráfico correspondiente
                 ax = axes[i, j]
                 ax.imshow(img)
-              
 
                 ax.imshow(colored_mask)
 
@@ -329,7 +320,6 @@ class Documentation():
 
         results: dict = self.getColorMethods(config_manager, processing)
 
-        # Crear la figura con 3 columnas
         fig, axes = plt.subplots(1, 3, figsize=(12, 3))
         fig.subplots_adjust(wspace=0.001)
         fig.suptitle('Comparación de Colores Predominantes', fontsize=16, fontweight='bold')
@@ -344,28 +334,23 @@ class Documentation():
             duration = method_data['Tiempo Ejecución (ms)']
             color_data = method_data['Color 1']
             
-            # Extraer datos
             pantone_name = color_data['Pantone Name']
             lab_values = color_data['LAB']
             rgb_values = color_data['RGB']
             delta_e = color_data['ΔE00']
             
-            # Título del método
             ax.text(0.5, 0.95, method, ha='center', va='top', fontsize=13, 
                     fontweight='bold', transform=ax.transAxes)
             
-            # Duración
             ax.text(0.5, 0.85, f'Tiempo de Ejecución: {duration:.1f} ms', ha='center', va='top', 
                     fontsize=10, transform=ax.transAxes, style='italic')
             
-            # Crear tabla
             table_data: list = [
                 ['Pantone', pantone_name],
                 ['LAB', f'[{lab_values[0]:.5f}, {lab_values[1]:.2f}, {lab_values[2]:.2f}]'],
                 ['ΔE00', f'{delta_e:.2f}' if delta_e != -1 else 'N/A']
             ]
             
-            # Dibujar tabla
             table = ax.table(cellText=table_data, cellLoc='left',
                             loc='center', bbox=[0.05, 0.42, 0.9, 0.3],
                             colWidths=[0.3, 0.7])
@@ -373,7 +358,6 @@ class Documentation():
             table.auto_set_font_size(False)
             table.set_fontsize(9)
             
-            # Estilo de la tabla
             for i in range(len(table_data)):
                 cell = table[(i, 0)]
                 cell.set_facecolor('#E8E8E8')
@@ -383,7 +367,6 @@ class Documentation():
                 cell.set_facecolor('white')
                 cell.set_height(0.1)
             
-            # Tarjeta de color RGB (ocupando las 2 columnas)
             rgb_normalized = rgb_values / 255.0
             color_box = plt.Rectangle((0.05, 0.05), 0.9, 0.32, 
                                     facecolor=rgb_normalized, 
@@ -409,13 +392,12 @@ class Documentation():
         ax.set_xlabel('Intensidad del Píxel')
         ax.set_ylabel('Cantidad de Píxeles')
 
-        # Dibuja el histograma para cada canal
         for color, hist in histograms.items():
             ax.plot(hist, color=color, label=f'Canal {color.upper()}')
         
         ax.legend()
         ax.grid(True, linestyle='--', alpha=0.6)
-        ax.set_xlim([0, 256]) # El rango de intensidad de color es de 0 a 255
+        ax.set_xlim([0, 255])
 
         os.makedirs(self.export_folder, exist_ok=True)
         img_path = os.path.join(self.export_folder, "segment_color_histogram.png")
@@ -642,9 +624,8 @@ class Calibration():
             dict: Diccionario con estadísticas del error (media, desv. estándar,
                   mínimo, máximo y valores individuales).
         """
-        is_detected = self.detectColorChecker(drawPatches=False, detectCalibratedImg=True, saveCalibratedPatches=True)
+        is_detected: bool = self.detectColorChecker(drawPatches=False, detectCalibratedImg=True, saveCalibratedPatches=True)
         if is_detected:
-            # Convertir parches detectados a LAB
             patches_rgb = self.color_patches_calibrated.reshape(24, 3)
             detected_lab = rgb2lab(patches_rgb[np.newaxis, :, :]).squeeze()
             delta_e00_values = deltaE_ciede2000(self.reference_LABs, detected_lab)
@@ -688,8 +669,6 @@ class Calibration():
         out_[out_ > 255] = 255
         out_img = out_.astype(np.uint8)
 
-        # Convert back to BGR
-        #out_img = cv2.cvtColor(out_, cv2.COLOR_RGB2BGR)
         return out_img
 
 
@@ -701,7 +680,7 @@ class ImageProcessing():
         Configura el modelo SAM2 para segmentación, carga la base de datos PANTONE
         y establece los parámetros por defecto para procesamiento de color.
         """
-        # Attributes
+
         self.raw_mask = None
         self.score = None
         self.feathered_mask = None
@@ -719,11 +698,9 @@ class ImageProcessing():
         self.original_image = None
         self.calibrated_image = None
 
-        # Load PANTONE database
         self.pantone_database_path="resources/pantone_databases/PANTONE Solid Coated-V4.json"
         self.loadPantoneDatabase()
 
-        # Create SAM2 predictor
         device = torch.device("cpu")
         sam2_checkpoint = "resources/checkpoints/sam2.1_hiera_tiny.pt"
         model_cfg = "configs/sam2.1/sam2.1_hiera_t.yaml"
@@ -731,7 +708,6 @@ class ImageProcessing():
         self.predictor = SAM2ImagePredictor(sam2_model)
         
 
-    # Methods
     def loadImage(self, image, calibration) -> None:
         """
         Carga y prepara una imagen para procesamiento.
@@ -924,7 +900,7 @@ class ImageProcessing():
         Establece las etiquetas de los puntos prompt para SAM2.
 
         Args:
-            input_label_list (list): Lista de etiquetas (1 para positivo, 0 para negativo).
+            input_label_list (list): Lista de etiquetas (1 para incluir, 0 para excluir).
         """
         self.input_label = np.array(input_label_list)
 
@@ -978,16 +954,10 @@ class ImageProcessing():
         _, binary_mask_uint8 = cv2.threshold(self.feathered_mask, 0.5, 255, cv2.THRESH_BINARY)
         binary_mask_uint8 = binary_mask_uint8.astype(np.uint8)
 
-        colors = ('b', 'g', 'r') # OpenCV usa el orden BGR
+        colors = ('b', 'g', 'r')
         histograms = {}
 
         for i, color in enumerate(colors):
-            # cv2.calcHist(images, channels, mask, histSize, ranges)
-            # - [self.image]: La imagen fuente.
-            # - [i]: El canal a calcular (0 para Azul, 1 para Verde, 2 para Rojo).
-            # - binary_mask_uint8: La máscara. Solo los píxeles donde la máscara es no-cero se incluyen.
-            # - [256]: El número de "bins" o niveles de intensidad (0 a 255).
-            # - [0, 256]: El rango de intensidad.
             hist = cv2.calcHist([self.calibrated_image], [i], binary_mask_uint8, [256], [0, 256])
             histograms[color] = hist
             
@@ -1108,7 +1078,7 @@ class ImageProcessing():
 
 
     def estimateColorByKMeans(self, n_clusters: int = 3,
-                                min_weight_threshold: float = 0.3) -> np.ndarray:
+                                min_weight_threshold: float = 0.3) -> None:
         """
         Estima el color predominante usando K-Means clustering.
 
@@ -1118,9 +1088,6 @@ class ImageProcessing():
         Args:
             n_clusters (int): Número de clusters para K-Means.
             min_weight_threshold (float): Umbral mínimo de peso para incluir píxeles.
-
-        Returns:
-            numpy.ndarray: Color LAB dominante.
         """
         # Convertir a LAB en rangos estándar
         image_lab = self.fromRGBtoLAB(self.calibrated_image)
@@ -1161,7 +1128,7 @@ class ImageProcessing():
     def estimateColorBySoftVoting(self,
                                 sigma: float = 10.0,
                                 n_clusters: int = 100,
-                                min_weight_threshold: float = 0.1) -> np.ndarray:
+                                min_weight_threshold: float = 0.1) -> None:
         """
         Estima el color predominante usando Soft Voting probabilístico.
 
@@ -1173,9 +1140,6 @@ class ImageProcessing():
             sigma (float): Parámetro del kernel RBF.
             n_clusters (int): Número de clusters para K-Means.
             min_weight_threshold (float): Umbral mínimo de peso para incluir píxeles.
-
-        Returns:
-            numpy.ndarray: Color LAB dominante.
         """
         # Convertir a LAB en rangos estándar
         image_lab = self.fromRGBtoLAB(self.calibrated_image)
@@ -1244,16 +1208,14 @@ class ImageProcessing():
         Returns:
             numpy.ndarray: Imagen LAB con rangos estándar [L: 0-100, a: -128-127, b: -128-127].
         """
-        # Paso 1: Convertir RGB a LAB (OpenCV devuelve uint8 en rangos comprimidos)
+
         image_lab_opencv = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2LAB)
         
-        # Paso 2: Convertir a float32 para precisión en cálculos
         image_lab = image_lab_opencv.astype(np.float32)
         
-        # Paso 3: Ajustar a rangos estándar CIELAB
-        image_lab[:, :, 0] = image_lab[:, :, 0] * (100.0 / 255.0)  # L*: [0, 100]
-        image_lab[:, :, 1] = image_lab[:, :, 1] - 128.0  # a*: [-128, 127]
-        image_lab[:, :, 2] = image_lab[:, :, 2] - 128.0  # b*: [-128, 127]
+        image_lab[:, :, 0] = image_lab[:, :, 0] * (100.0 / 255.0)
+        image_lab[:, :, 1] = image_lab[:, :, 1] - 128.0
+        image_lab[:, :, 2] = image_lab[:, :, 2] - 128.0
         
         return image_lab
 
@@ -1291,15 +1253,12 @@ class ImageProcessing():
             Square cropped image centered on the original
         """
         height, width = image.shape[:2]
-        
-        # The square side will be the smaller of the two dimensions
+
         square_side = min(width, height)
-        
-        # Calculate the starting point for the crop (centered)
+
         start_x = (width - square_side) // 2
         start_y = (height - square_side) // 2
-        
-        # Crop the image
+
         square_image = image[start_y:start_y + square_side, 
                             start_x:start_x + square_side]
         
@@ -1341,10 +1300,7 @@ class Viewer(QGraphicsView):
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff) # Hides vertical scroll bar
         self.viewport().setCursor(Qt.ArrowCursor) # Changes cursor shape
 
-        # Variables para preview
         self.preview_item = None
-
-    # Methods
 
     def loadScene(self):
         """
@@ -1394,9 +1350,9 @@ class Viewer(QGraphicsView):
             pixmap (QPixmap): Imagen a mostrar.
         """
         self.scene.clear()
-        self.mask_item = None               # <-- Olvida la referencia a la máscara anterior.
-        self.point_coordinates.clear()      # <-- Limpia la lista de coordenadas.
-        self.point_labels.clear()           # <-- Limpia la lista de etiquetas.
+        self.mask_item = None
+        self.point_coordinates.clear()
+        self.point_labels.clear()
         
         self.pixmap_item = QGraphicsPixmapItem(pixmap) 
         self.scene.addItem(self.pixmap_item)
@@ -1414,17 +1370,14 @@ class Viewer(QGraphicsView):
         Añade un QPixmap como una capa superpuesta sobre la imagen principal.
         Si ya existe una capa anterior, la elimina primero.
         """
-        # Si ya había una máscara, la eliminamos de la escena
+
         if self.mask_item:
             self.scene.removeItem(self.mask_item)
 
-        # Creamos el nuevo item para la máscara
         self.mask_item = QGraphicsPixmapItem(pixmap)
-        
-        # Le damos un Z-value mayor que 0 para que se dibuje sobre la imagen base
+
         self.mask_item.setZValue(1)
-        
-        # Lo añadimos a la escena
+
         self.scene.addItem(self.mask_item)
 
     def getImageArrayFromScene(self):
@@ -1437,30 +1390,24 @@ class Viewer(QGraphicsView):
         Returns:
             numpy.ndarray: Imagen RGB de la escena renderizada.
         """
-        # Obtener el rectángulo de la escena
+
         scene_rect = self.scene.sceneRect()
-        
-        # Crear una imagen con el tamaño de la escena
+
         width = int(scene_rect.width())
         height = int(scene_rect.height())
-        
-        # Crear QImage con formato RGB32
+
         image = QImage(width, height, QImage.Format_RGB32)
-        image.fill(0xFFFFFF)  # Fondo blanco (opcional)
-        
-        # Crear painter y renderizar la escena
+        image.fill(0xFFFFFF)
+
         painter = QPainter(image)
         painter.setRenderHint(QPainter.Antialiasing)
         self.scene.render(painter, QRectF(image.rect()), scene_rect)
         painter.end()
-        
-        # Convertir QImage a numpy array
-        # Obtener puntero a los datos de la imagen
+
         ptr = image.constBits()
-        arr = np.array(ptr).reshape(height, width, 4)  # RGBA
-        
-        # Convertir de BGRA a RGB (Qt usa BGRA internamente)
-        rgb_array = arr[:, :, [2, 1, 0]].copy()  # Intercambiar canales B y R
+        arr = np.array(ptr).reshape(height, width, 4)
+
+        rgb_array = arr[:, :, [2, 1, 0]].copy()
         
         return rgb_array
 
@@ -1478,7 +1425,7 @@ class Viewer(QGraphicsView):
         Obtiene las etiquetas de todos los puntos prompt.
 
         Returns:
-            list: Lista de etiquetas (1 para positivo, 0 para negativo).
+            list: Lista de etiquetas (1 para incluir, 0 para excluir).
         """
         return self.point_labels
 
@@ -1542,17 +1489,11 @@ class Viewer(QGraphicsView):
             event: Evento de movimiento del mouse.
         """
         if not self.camera.getIsPreviewFlag():
-            # Si el botón izquierdo está presionado y tenemos una posición de inicio...
             if event.buttons() == Qt.LeftButton and self.click_pos:
-                # Calculamos la distancia desde el punto de inicio
-                # manhattanLength es una forma rápida de medir la distancia
                 dist = (event.position() - self.click_pos).manhattanLength()
-                # QApplication.startDragDistance() es la distancia recomendada por el SO
-                # para considerar algo como un arrastre
                 if dist > QApplication.startDragDistance():
                     self.is_panning = True
-            
-            # Pasamos el evento a la clase base para que el paneo funcione
+
             super().mouseMoveEvent(event)
 
     def addPoint(self, x: float, y: float, label: int):
@@ -1564,13 +1505,13 @@ class Viewer(QGraphicsView):
         Args:
             x (float): Coordenada X del punto en la escena.
             y (float): Coordenada Y del punto en la escena.
-            label (int): Etiqueta del punto (1 para positivo, 0 para negativo).
+            label (int): Etiqueta del punto (1 para incluir, 0 para excluir).
         """
         self.point_coordinates.append((x, y))
         self.point_labels.append(label)
         color = QColor(0, 255, 0) if label == 1 else QColor(255, 0, 0)
-        # Dibujamos un círculo rojo para marcar el punto
-        radius = (int(self.scene_rect.width())>>8) + self.min_markpoint_radius # Escalar punto a dibujar
+
+        radius = (int(self.scene_rect.width())>>8) + self.min_markpoint_radius
         marker = QGraphicsEllipseItem(
             x - radius,
             y - radius,
@@ -1579,7 +1520,7 @@ class Viewer(QGraphicsView):
         )
         marker.setBrush(color)
         marker.setPen(Qt.NoPen)
-        # Aseguramos que el marcador se dibuje encima de la foto
+
         marker.setZValue(1) 
         self.scene.addItem(marker)
         self.marker_items.append(marker)
@@ -1598,15 +1539,12 @@ class Viewer(QGraphicsView):
             if event.button() == Qt.LeftButton and not self.is_panning:
                 if self.pixmap_item:
                     coordinates = self.mapToScene(event.position().toPoint()).toPoint()
-                    # Verificamos si el clic fue DENTRO de la imagen
                     if self.pixmap_item.contains(coordinates):
                         self.addPoint(x=coordinates.x(), y=coordinates.y(), label=1)
-                        
-            # Reseteamos el estado para el próximo clic
+
             self.press_pos = None
             self.is_panning = False
-        
-            # Pasamos el evento a la clase base para que se complete la lógica del drag
+
             super().mouseReleaseEvent(event)
             self.viewport().setCursor(Qt.ArrowCursor)
     
@@ -1621,17 +1559,14 @@ class Viewer(QGraphicsView):
             event: Evento de presionar el botón del mouse.
         """
         if (not self.is_calibration) and (not self.camera.getIsPreviewFlag()):
-            # Solo nos interesa el clic izquierdo p ara iniciar la lógica
             if event.button() == Qt.LeftButton and self.pixmap_item:
                 self.click_pos = event.position()
                 self.is_panning = False
             elif event.button() == Qt.RightButton and self.pixmap_item:
                 coordinates = self.mapToScene(event.position().toPoint()).toPoint()
-                # Verificamos si el clic fue DENTRO de la imagen
                 if self.pixmap_item.contains(coordinates):
                     self.addPoint(x=coordinates.x(), y=coordinates.y(), label=0)
-        
-            # Pasamos el evento a la clase base para que el drag se inicie si es necesario
+
             super().mousePressEvent(event)
 
     def clearMask(self) -> None:
@@ -1716,22 +1651,20 @@ class Viewer(QGraphicsView):
 
 
 class ConfigManager:
-    """Gestor de configuración con soporte para JSON"""
-    
     def __init__(self) -> None:
+        """Gestor de configuración con soporte para JSON"""
         self.default_config_path = "resources/config/default_config.json"
         self.user_config_path = "resources/config/user_config.json"
         self.style_path = "resources/styles/dark_theme.qss"
         self.config = None
         self.style = None
 
-        # Cargar configuración
         self.loadConfig()
         self.loadStyle()
     
     def loadConfig(self):
         """Carga la configuración (usuario si existe, sino default)"""
-        # Intentar cargar configuración de usuario primero
+
         if os.path.exists(self.user_config_path):
             try:
                 with open(self.user_config_path, 'r', encoding='utf-8') as f:
@@ -1740,7 +1673,6 @@ class ConfigManager:
             except Exception as e:
                 print(f"Error al cargar configuración de usuario: {e}")
         
-        # Si no existe o falla, cargar configuración por defecto
         self.loadDefaultConfig()
     
     def loadDefaultConfig(self) -> None:
@@ -1770,20 +1702,17 @@ class ConfigManager:
         if self.config is None:
             self.loadConfig()
         
-        # Crear categoría si no existe
         if category not in self.config:
             self.config[category] = {}
         
-        # Asignar el nuevo valor
         self.config[category][key] = value
 
-        # Guardar automáticamente en el archivo de usuario
         self.saveUserConfig(self.config)
     
     def resetToDefault(self):
         """Resetea a la configuración por defecto y la guarda"""
         self.loadDefaultConfig()
-        # Eliminar configuración de usuario
+
         if os.path.exists(self.user_config_path):
             os.remove(self.user_config_path)
     
@@ -1801,8 +1730,6 @@ class ConfigManager:
 
 
 class ConfigDialog(QDialog):
-    """Ventana de configuración con pestañas para diferentes parámetros"""
-
     def __init__(self, parent=None, config_manager=None, processing=None):
         """
         Inicializa el diálogo de configuración con todas las pestañas de ajustes.
@@ -1821,30 +1748,26 @@ class ConfigDialog(QDialog):
 
         self.color_mask = self.processing.getFeatheredMaskColor().tolist()
         
-        # Configuración de la ventana
         self.setWindowTitle("Configuración")
         self.setMinimumSize(550, 440)
 
         flags = self.windowFlags()
 
         self.setWindowFlags(
-            Qt.Dialog |                    # Es un diálogo
-            Qt.WindowCloseButtonHint |     # Botón de cerrar visible
-            Qt.WindowTitleHint |           # Barra de título visible
-            Qt.WindowSystemMenuHint        # Menú del sistema visible
+            Qt.Dialog |
+            Qt.WindowCloseButtonHint |
+            Qt.WindowTitleHint |
+            Qt.WindowSystemMenuHint
         )
 
-        self.setModal(True)  # Hace que sea modal (bloquea la ventana principal)
+        self.setModal(True)
 
         self.setAttribute(Qt.WA_DeleteOnClose, False)
         
-        # Layout principal
         main_layout = QVBoxLayout()
         
-        # Crear el widget de pestañas
         self.tab_widget = QTabWidget()
         
-        # Crear las diferentes pestañas
         self.tab_widget.addTab(self.createCameraTab(), "Cámara")
         self.tab_widget.addTab(self.createCalibrationTab(), "Calibración")
         self.tab_widget.addTab(self.createSegmentationTab(), "Segmentación")
@@ -1853,24 +1776,20 @@ class ConfigDialog(QDialog):
         
         main_layout.addWidget(self.tab_widget)
         
-        # Botones de acción
         button_layout = self.createButtonLayout()
         main_layout.addLayout(button_layout)
         
         self.setLayout(main_layout)
-        
-        # Cargar valores desde el config manager
+
         if self.config_manager:
             self.loadConfigValues()
     
     def closeEvent(self, event):
         """Maneja el evento de cierre de la ventana"""
-        # Permitir cerrar la ventana siempre
         event.accept()
     
     def keyPressEvent(self, event):
         """Maneja eventos de teclado"""
-        # Permitir cerrar con ESC
         if event.key() == Qt.Key_Escape:
             self.reject()
         else:
@@ -1907,28 +1826,28 @@ class ConfigDialog(QDialog):
         
         # Contrast (SpinBox)
         self.spin_contrast = QDoubleSpinBox()
-        self.spin_contrast.setRange(0.0, 6.0)  # 100µs a 1s
+        self.spin_contrast.setRange(0.0, 6.0)
         self.spin_contrast.setValue(0.9)
         self.spin_contrast.setSingleStep(0.1)
         tuning_layout.addRow("Contraste", self.spin_contrast)
 
         # Saturation (SpinBox)
         self.spin_saturation = QDoubleSpinBox()
-        self.spin_saturation.setRange(0.0, 6.0)  # 100µs a 1s
+        self.spin_saturation.setRange(0.0, 6.0)
         self.spin_saturation.setValue(0.9)
         self.spin_saturation.setSingleStep(0.1)
         tuning_layout.addRow("Saturación", self.spin_saturation)
 
         # Brightness (SpinBox)
         self.spin_brightness = QDoubleSpinBox()
-        self.spin_brightness.setRange(-1.0, 1.0)  # 100µs a 1s
+        self.spin_brightness.setRange(-1.0, 1.0)
         self.spin_brightness.setValue(0.0)
         self.spin_brightness.setSingleStep(0.1)
         tuning_layout.addRow("Brillo", self.spin_brightness)
 
         # Sharpness (SpinBox)
         self.spin_sharpness = QDoubleSpinBox()
-        self.spin_sharpness.setRange(0.0, 16.0)  # 100µs a 1s
+        self.spin_sharpness.setRange(0.0, 16.0)
         self.spin_sharpness.setValue(1.0)
         self.spin_sharpness.setSingleStep(0.1)
         tuning_layout.addRow("Nitidez", self.spin_sharpness)
@@ -1947,7 +1866,7 @@ class ConfigDialog(QDialog):
         self.check_aec.stateChanged.connect(self.aecChecked)
         aec_layout.addRow("Control de exposición automático", self.check_aec)
         
-        # Exposition time (SpinBox en microsegundos)
+        # Exposition time (SpinBox)
         self.label_exposition_time = QLabel("Tiempo de exposición")
         self.spin_exposition_time = QSpinBox()
         self.spin_exposition_time.setRange(1, 66666)
@@ -2067,7 +1986,7 @@ class ConfigDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout()
         
-        # Group Box sin título
+        # Group Box
         calibration_group = QGroupBox()
         calibration_layout = QVBoxLayout()
         calibration_layout.setSpacing(15)
@@ -2194,13 +2113,12 @@ class ConfigDialog(QDialog):
         r,g,b = self.processing.getFeatheredMaskColor().tolist()
         self.color_mask = [r, g, b]
         current_color = QColor(r,g,b)
-        # Abrir diálogo de color
+
         new_color = QColorDialog.getColor(current_color, self, "Seleccionar color de máscara")
         
         if new_color.isValid():
             r, g, b = new_color.red(), new_color.green(), new_color.blue()
             self.color_mask = [r, g, b]
-            #self.processing.setFeatheredMaskColor([r,g,b])
             self.frame_mask_color.setStyleSheet(
                 f"background-color: rgb({r}, {g}, {b}); border: 2px solid #999;"
             )
@@ -2246,11 +2164,11 @@ class ConfigDialog(QDialog):
         method_select_layout.addRow("Seleccionar método", self.combo_color_method)
         method_layout.addLayout(method_select_layout)
         
-        # Contenedor para parámetros condicionales
+        # Conditional params
         self.method_params_layout = QFormLayout()
         self.method_params_layout.setHorizontalSpacing(20)
         
-        # Parámetros para Median
+        # Median params
         self.label_threshold_median = QLabel("Umbral máscara")
         self.spin_threshold_median = QDoubleSpinBox()
         self.spin_threshold_median.setRange(0.0, 1.0)
@@ -2259,7 +2177,7 @@ class ConfigDialog(QDialog):
         self.spin_threshold_median.setSingleStep(0.05)
         self.method_params_layout.addRow(self.label_threshold_median, self.spin_threshold_median)
         
-        # Parámetros para KMeans
+        # KMeans params
         self.label_threshold_kmeans = QLabel("Umbral máscara")
         self.spin_threshold_kmeans = QDoubleSpinBox()
         self.spin_threshold_kmeans.setRange(0.0, 1.0)
@@ -2274,7 +2192,7 @@ class ConfigDialog(QDialog):
         self.spin_number_clusters.setValue(3)
         self.method_params_layout.addRow(self.label_number_clusters, self.spin_number_clusters)
         
-        # Parámetros para SoftVoting
+        # SoftVoting params
         self.label_threshold_softvoting = QLabel("Umbral máscara")
         self.spin_threshold_softvoting = QDoubleSpinBox()
         self.spin_threshold_softvoting.setRange(0.0, 1.0)
@@ -2305,7 +2223,6 @@ class ConfigDialog(QDialog):
         layout.addStretch()
         tab.setLayout(layout)
         
-        # Mostrar solo los parámetros del método por defecto
         self.onColorMethodChanged("Mediana")
         
         return tab
@@ -2323,7 +2240,6 @@ class ConfigDialog(QDialog):
     
     def onColorMethodChanged(self, method):
         """Muestra/oculta parámetros según el método seleccionado"""
-        # Ocultar todos los parámetros primero
         self.label_threshold_median.hide()
         self.spin_threshold_median.hide()
         self.label_threshold_kmeans.hide()
@@ -2337,7 +2253,6 @@ class ConfigDialog(QDialog):
         self.label_n_clusters_soft.hide()
         self.spin_n_clusters_soft.hide()
         
-        # Mostrar solo los parámetros del método seleccionado
         if method == "Mediana":
             self.label_threshold_median.show()
             self.spin_threshold_median.show()
@@ -2434,22 +2349,18 @@ class ConfigDialog(QDialog):
         """Crea los botones de Aceptar y Cancelar"""
         button_layout = QHBoxLayout()
 
-        # Botón Restaurar por defecto (a la izquierda)
         btn_restore = QPushButton("Restaurar")
         btn_restore.clicked.connect(self.restoreDefaults)
         button_layout.addWidget(btn_restore)
 
         button_layout.addStretch()
         
-        # Botón Cancelar
         btn_cancel = QPushButton("Cancelar")
         btn_cancel.clicked.connect(self.reject)
         button_layout.addWidget(btn_cancel)
         
-        # Botón Aceptar
         btn_accept = QPushButton("Aceptar")
         btn_accept.clicked.connect(self.accept)
-        #btn_accept.setDefault(True)
         button_layout.addWidget(btn_accept)
         
         return button_layout
@@ -2598,7 +2509,6 @@ class ConfigDialog(QDialog):
 
 
 class MainWindow(QMainWindow):
-    # Initialization
     def __init__(self) -> None:
         """
         Inicializa la ventana principal de la aplicación SACISMC.
@@ -2610,21 +2520,16 @@ class MainWindow(QMainWindow):
 
         self.source_img_path = None
         self.doc = Documentation()
-
-        # Inicializar el gestor de configuración
         self.config_manager = ConfigManager()
-
         self.camera = Camera()
-
         self.calibration = Calibration(self.config_manager)
         self.processing = ImageProcessing()
 
-        # Variables para manejo de preview
         self.preview_timer = QTimer()
         self.preview_timer.timeout.connect(self.updatePreviewFrame)
-        self.preview_fps = 10  # FPS bajo para optimizar RAM
+        self.preview_fps = 10
         self.preview_timer.setInterval(int(1000 / self.preview_fps))
-        self.current_preview_type = 'segmentation'  # 'segmentation' o 'calibration'
+        self.current_preview_type = 'segmentation'  # 'segmentation' or 'calibration'
         self.is_preview_active = False
 
         # Window Settings
@@ -2634,7 +2539,7 @@ class MainWindow(QMainWindow):
         self.viewer = Viewer(camera=self.camera)
         self.viewer.setFixedSize(720, 720)
 
-        # Panel lateral derecho
+        # Side panel
         self.side_panel = QStackedWidget()
         self.side_panel.setFixedWidth(460)
         self.operationWidget = self.createSideOperationWidget()
@@ -2692,11 +2597,9 @@ class MainWindow(QMainWindow):
 
         # Initial config
         self.applyConfigToComponents(self.config_manager.getConfig())
-
-        # Iniciar preview de segmentación al arrancar
         self.startPreviewSegmentation()
 
-    # Methods
+
     def startPreviewSegmentation(self):
         """Inicia el preview para el módulo de segmentación"""
         self.current_preview_type = 'segmentation'
@@ -2705,7 +2608,6 @@ class MainWindow(QMainWindow):
         if self.viewer.scene:
             self.viewer.scene.clear()
 
-        # Cargar escena UNA VEZ
         self.viewer.loadScene()
         self.viewer.clearVariables()
 
@@ -2760,40 +2662,32 @@ class MainWindow(QMainWindow):
 
     def openSettingsDialog(self) -> None:
         """Abre el diálogo de configuración"""
-        # Detener preview al abrir configuración
+
         was_preview_active = self.is_preview_active
         preview_type_backup = self.current_preview_type
         if was_preview_active:
             self.stopPreview()
 
         dialog = ConfigDialog(self, self.config_manager, self.processing)
-        
-        # Aplicar el mismo estilo que la ventana principal
         dialog.setStyleSheet(self.config_manager.getStyle())
         
-        # Mostrar el diálogo y procesar resultado
         if dialog.exec() == QDialog.Accepted:
-            # Obtener los valores configurados
             values = dialog.getValues()
             self.config_manager.saveUserConfig(values)
-            # Aplicar los valores al processing si existe
             self.applyConfigToComponents(values)
-                
-            # Mostrar mensaje de confirmación
+
             QMessageBox.information(
                 self, 
                 "Configuración aplicada",
                 "Los parámetros se han guardado y aplicado correctamente."
             )
 
-            # Reanudar preview con nueva configuración si estaba activo
             if was_preview_active:
                 if preview_type_backup == 'segmentation':
                     self.startPreviewSegmentation()
                 else:
                     self.startPreviewCalibration()
         else:
-            # Si se canceló, solo reanudar preview si estaba activo
             if was_preview_active:
                 if preview_type_backup == 'segmentation':
                     self.startPreviewSegmentation()
@@ -2802,26 +2696,21 @@ class MainWindow(QMainWindow):
 
     def applyConfigToComponents(self, config):
         """Aplica la configuración a todos los componentes de la aplicación"""
-        # Aplicar a Camara
+
         self.camera.setControls(config)
 
-        # Aplicar a Calibration
         self.calibration.params_path = config['calibration']['calibration_params_path']
-        
-        # Aplicar a Viewer
+
         self.viewer.min_markpoint_radius = config['segmentation']['scene']['marker_radius']
 
-        # Crear carpeta de resultados si no existe
         results_folder = config['export']['results']['folder_path']
         os.makedirs(results_folder, exist_ok=True)
-        
-        # Crear subcarpeta images
+
         images_folder = os.path.join(results_folder, "images")
         os.makedirs(images_folder, exist_ok=True)
 
         self.doc.dpi = config['export']['analysis_images']['dpi']
-        
-        # Aplicar a Processing si existe
+
         if self.processing:
             self.processing.scaled_image_size = config['segmentation']['scene']['image_scale_size']
             self.processing.r_filter = config['segmentation']['guided_filter']['radius']
@@ -2829,7 +2718,6 @@ class MainWindow(QMainWindow):
             self.processing.setFeatheredMaskColor(config['segmentation']['mask']['mask_color'])
             self.processing.pantone_database_path = config['color']['pantone']['database_file']
             self.processing.loadPantoneDatabase()
-            # Cambiar color mascara
             if self.viewer.mask_item:
                 self.viewer.clearMask()
                 f_color = self.processing.getFeatheredMaskColor()
@@ -2844,7 +2732,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(20)
         
-        # Botones
+        # Buttons
         self.group_box_button = QWidget()
         group_button_layout = QVBoxLayout()
         group_button_layout.setContentsMargins(0, 0, 0, 0) 
@@ -3094,7 +2982,7 @@ class MainWindow(QMainWindow):
         Returns:
             QWidget: Widget con el panel de calibración completo.
         """
-        # Layout total
+
         widget = QWidget()
         layout = QVBoxLayout(widget)
         layout.setAlignment(Qt.AlignTop)
@@ -3188,11 +3076,6 @@ class MainWindow(QMainWindow):
         layout_save_apply.setContentsMargins(13, 5, 13, 10)
         layout_save_apply.setSpacing(7)
 
-        #input_file_name = QLineEdit()
-        #input_file_name.setPlaceholderText("Nombre archivo .pickle")
-        #input_file_name.setFixedHeight(30)
-        #layout_save_apply.addWidget(input_file_name)
-
         label_save_apply = QLabel("Aplicar matriz de corrección de color")
         layout_save_apply.addWidget(label_save_apply)
 
@@ -3233,11 +3116,6 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.radio_buttons)
 
         # ------------ Finish Buttons ------------
-        #line2 = QFrame()
-        #line2.setFrameShape(QFrame.NoFrame)
-        #line2.setFixedHeight(2)
-        #layout.addWidget(line2)
-
         self.finish_buttons = QWidget()
         layout_finish_buttons = QHBoxLayout(self.finish_buttons)
         layout_finish_buttons.setContentsMargins(0, 0, 0, 0)
@@ -3280,7 +3158,6 @@ class MainWindow(QMainWindow):
         Detiene el preview, captura una imagen calibrada de alta resolución
         y la carga para segmentación.
         """
-        # Detener preview mientras se captura
         self.stopPreview()
 
         image = self.camera.capture()
@@ -3311,7 +3188,6 @@ class MainWindow(QMainWindow):
 
         Captura una imagen del ColorChecker para proceso de calibración.
         """
-        # Detener preview mientras se captura
         self.stopPreview()
 
         self.calibration.loadRawImage(self.camera.capture())
@@ -3347,7 +3223,6 @@ class MainWindow(QMainWindow):
 
         Permite cargar imágenes .png o .npy para calibración.
         """
-        # Detener preview al abrir configuración
         was_preview_active = self.is_preview_active
         preview_type_backup = self.current_preview_type
         if was_preview_active:
@@ -3356,7 +3231,7 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self, "Seleccionar Imagen", "resources/calibration", "Archivos de Imagen (*.npy *.png)"
         )
-        #"Seleccionar Imagen", "resources/calibration", "Archivos de Imagen (*.png *.jpg *.jpeg *.bmp)"
+
         if path:
             ext: str = os.path.splitext(path)[1].lower()
             if ext == ".png":
@@ -3400,7 +3275,7 @@ class MainWindow(QMainWindow):
         Reconstruye el modelo CCM, calibra la imagen y calcula los valores ΔE00.
         """
         self.calibration.reconstructModel()
-        # Apply calibration and show it
+
         img = self.calibration.applyColorCorrection(self.calibration.getRawImage())
         self.calibration.setDrawImage(img)
         self.viewer.setImageFromPixmap(self.viewer.fromCV2ToQPixmap(img))
@@ -3411,7 +3286,7 @@ class MainWindow(QMainWindow):
                     f'\u00A0\u00A0|\u00A0\u00A0' \
                     f'min/max (ΔE00) : {self.deltas['min']:.2f} / {self.deltas['max']:.2f}'
         self.label_measures_delta.setText(label)
-        # Update GUI
+
         self.label_measures_delta.show()
         self.radio_buttons.show()
         self.button_save.show()        
@@ -3429,13 +3304,10 @@ class MainWindow(QMainWindow):
                                     "Archivos PICKLE (*.pickle)"
                                 )
         if file_path:
-            # Update config json file
             self.config_manager.setValue("calibration", "calibration_params_path", file_path)
-            # Save calibration params
             self.calibration.setPathcalibrationParams(file_path)
             self.calibration.saveCalibrationParams()
 
-            # Create excel report
             excel_path = "exports/calibration_logs.xlsx"
 
             date: datetime = datetime.now()
@@ -3454,23 +3326,18 @@ class MainWindow(QMainWindow):
 
             try:
                 if os.path.exists(excel_path):
-                    # Leer el archivo existente
                     existing_df = pd.read_excel(excel_path)
                     
-                    # Concatenar los datos existentes con los nuevos
                     final_df = pd.concat([existing_df, new_df], ignore_index=True)
                     final_df = final_df.astype(str)
                 else:
-                    # Si no existe, usar solo los nuevos datos
                     final_df = new_df
-                
-                # Guardar el DataFrame en Excel
+
                 final_df.to_excel(excel_path, index=False, engine='openpyxl')
                 time.sleep(1)
 
                 msg = "El archivo de calibración (pickle) se ha guardado correctamente."
 
-                # Mostrar mensaje de éxito
                 QMessageBox.information(self, "Completado", msg)
 
                 if self.viewer.scene:
@@ -3479,7 +3346,6 @@ class MainWindow(QMainWindow):
                 self.calibration.clearAllCalibration()
                 self.restoreOperationWidget()
 
-                # Volver al preview de segmentación
                 self.stopPreview()
                 self.startPreviewSegmentation()
                 
@@ -3503,7 +3369,6 @@ class MainWindow(QMainWindow):
         self.calibration.clearAllCalibration()
         self.restoreOperationWidget()
 
-        # Volver al preview de segmentación
         self.stopPreview()
         self.startPreviewSegmentation()
     
@@ -3701,23 +3566,18 @@ class MainWindow(QMainWindow):
             new_df = pd.DataFrame([new_data])
             try:
                 if os.path.exists(excel_path):
-                    # Leer el archivo existente
                     existing_df = pd.read_excel(excel_path)
-                    
-                    # Concatenar los datos existentes con los nuevos
+
                     final_df = pd.concat([existing_df, new_df], ignore_index=True)
                     final_df = final_df.astype(str)
                 else:
-                    # Si no existe, usar solo los nuevos datos
                     final_df = new_df
-                
-                # Guardar el DataFrame en Excel
+
                 final_df.to_excel(excel_path, index=False, engine='openpyxl')
                 time.sleep(1)
 
                 msg:str = f"Datos guardados correctamente:\n- Excel: {excel_path}"
 
-                # Mostrar mensaje de éxito
                 QMessageBox.information(self, "Completado", msg)
                 
             except Exception as e:
@@ -3748,7 +3608,6 @@ class MainWindow(QMainWindow):
         config = self.config_manager.getConfig()
         results_folder = config['export']['results']['folder_path']
 
-        # Crear carpetas si no existen
         os.makedirs(results_folder, exist_ok=True)
         images_folder = os.path.join(results_folder, "images")
         os.makedirs(images_folder, exist_ok=True)
@@ -3757,7 +3616,6 @@ class MainWindow(QMainWindow):
         date: datetime = datetime.now()
         msg:str = f"Datos guardados correctamente:\n- Excel: {excel_path}"
 
-        # Rutas usando la carpeta configurada
         img_filename_original: str = f"{id.lower().replace(' ','_')}.png"
         img_filename_calibrated: str = f"{id.lower().replace(' ','_')}_calibrated.png"
 
@@ -3799,23 +3657,17 @@ class MainWindow(QMainWindow):
 
         try:
             if os.path.exists(excel_path):
-                # Leer el archivo existente
                 existing_df = pd.read_excel(excel_path)
-                
-                # Concatenar los datos existentes con los nuevos
+
                 final_df = pd.concat([existing_df, new_df], ignore_index=True)
                 final_df = final_df.astype(str)
             else:
-                # Si no existe, usar solo los nuevos datos
                 final_df = new_df
-            
-            # Guardar el DataFrame en Excel
+
             final_df.to_excel(excel_path, index=False, engine='openpyxl')
 
-            # Mostrar mensaje de éxito
             QMessageBox.information(self, "Completado", msg)
-            
-            # Limpiar el campo de texto después de guardar
+
             self.input_id.clear()
             
         except Exception as e:
@@ -3828,7 +3680,7 @@ class MainWindow(QMainWindow):
 
         Permite exportar la visualización completa (imagen + overlays) en formato PNG o NPY.
         """
-        #if self.source_img_path is None:
+
         if self.viewer.scene is None:
             QMessageBox.warning(self, "Sin imagen", 
                             "No hay ninguna imagen cargada para guardar.")
@@ -3870,7 +3722,7 @@ class MainWindow(QMainWindow):
         Cambia el panel lateral al modo calibración y activa el preview específico
         para captura del ColorChecker.
         """
-        # Detener preview de segmentación
+
         self.stopPreview()
         self.doc.setIsSegmentedFlag(False)
 
@@ -3882,7 +3734,6 @@ class MainWindow(QMainWindow):
         self.side_panel.addWidget(calibrationWidget)
         self.side_panel.setCurrentWidget(calibrationWidget)
 
-        # Iniciar preview de calibración
         self.startPreviewCalibration()
 
     def restoreOperationWidget(self) -> None:
@@ -3909,7 +3760,6 @@ class MainWindow(QMainWindow):
             self, "Seleccionar Imagen", "resources", "Archivos de Imagen (*.png *.npy)"
         )
         if self.source_img_path:
-            # Detener preview al abrir imagen desde archivo
             self.stopPreview()
 
             ext = os.path.splitext(self.source_img_path)[1].lower()
@@ -3944,7 +3794,6 @@ class MainWindow(QMainWindow):
         """
         if self.processing:
             if self.viewer.point_coordinates:
-                # Obtener configuración de método de color
                 config = self.config_manager.getConfig()
                 color_method = config['color']['method']['selected_method']
 
@@ -4027,11 +3876,9 @@ class MainWindow(QMainWindow):
         Genera un gráfico con los histogramas RGB de los píxeles dentro de la máscara.
         """
         if self.doc.getIsSegmentedFlag():
-            # 1. Obtener los datos del histograma desde ImageProcessing
             hist_data = self.processing.getSegmentedRegionHistogram()
 
             if hist_data:
-                # 2. Generar y guardar la imagen del gráfico con Documentation
                 img_path = self.doc.createHistogramImage(hist_data)
                 QMessageBox.information(self, 
                                         "Histograma Exportado", 
@@ -4046,7 +3893,8 @@ class MainWindow(QMainWindow):
                                 "Por favor, corre la segmentación antes de exportar el histograma.")
 
 if __name__ == "__main__":
+    #Start the event loop
     app = QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    app.exec() #Start the event loop
+    app.exec()

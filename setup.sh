@@ -1,11 +1,11 @@
 #!/bin/bash
 
-# Usar el directorio donde está el script
+# App base script
 BASE_PATH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 echo -e "Usando ruta base: $BASE_PATH"
 
 
-# VENV para picam
+# venv for Picam
 python3 -m venv "$BASE_PATH/.venv" --system-site-packages
 source "$BASE_PATH/.venv/bin/activate"
 
