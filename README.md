@@ -30,7 +30,7 @@ SACISMC es una aplicación de escritorio desarrollada para la identificación y 
 ### 1. Clonar el Repositorio
  
 ```bash
-git clone https://github.com/tu-usuario/Color-Identification-System-in-Microbial-Colonies.git
+git clone https://github.com/dd-giraldo/Color-Identification-System-in-Microbial-Colonies
 cd Color-Identification-System-in-Microbial-Colonies
 ```
  
